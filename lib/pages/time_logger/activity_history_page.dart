@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
+import '../../services/time_logger_storage_v2.dart';
 import '../../services/time_logger_storage.dart';
 
+/// 优化版活动历史页面 - 支持分页和懒加载
 class ActivityHistoryPage extends StatefulWidget {
   const ActivityHistoryPage({super.key});
 
@@ -12,24 +14,102 @@ class ActivityHistoryPage extends StatefulWidget {
 class _ActivityHistoryPageState extends State<ActivityHistoryPage> {
   List<ActivityRecordData> _records = [];
   bool _isLoading = true;
+  bool _isLoadingMore = false;
   DateTime? _selectedDate;
+
+  // 分页相关
+  int _currentPage = 0;
+  static const int _pageSize = 30;
+  bool _hasMore = true;
+
+  final ScrollController _scrollController = ScrollController();
 
   @override
   void initState() {
     super.initState();
-    _loadRecords();
+    _loadInitialRecords();
+    _scrollController.addListener(_onScroll);
   }
 
-  Future<void> _loadRecords() async {
-    setState(() => _isLoading = true);
-    final records = await TimeLoggerStorage.getAllRecords();
+  @override
+  void dispose() {
+    _scrollController.dispose();
+    super.dispose();
+  }
 
-    if (mounted) {
-      setState(() {
-        _records = records;
-        _isLoading = false;
-      });
+  /// 监听滚动,实现无限加载
+  void _onScroll() {
+    if (_isLoadingMore || !_hasMore) return;
+
+    final maxScroll = _scrollController.position.maxScrollExtent;
+    final currentScroll = _scrollController.position.pixels;
+
+    // 滚动到底部前 200px 时加载更多
+    if (currentScroll >= maxScroll - 200) {
+      _loadMoreRecords();
     }
+  }
+
+  /// 首次加载 - 只加载最近 30 天
+  Future<void> _loadInitialRecords() async {
+    setState(() => _isLoading = true);
+
+    try {
+      // 优化: 首次只加载最近 30 天的数据
+      final records = await TimeLoggerStorageV2.getRecentRecords(30);
+
+      if (mounted) {
+        setState(() {
+          _records = records;
+          _isLoading = false;
+          _hasMore = records.length >= _pageSize;
+        });
+      }
+    } catch (e) {
+      print('加载记录失败: $e');
+      if (mounted) {
+        setState(() => _isLoading = false);
+      }
+    }
+  }
+
+  /// 加载更多记录 (分页)
+  Future<void> _loadMoreRecords() async {
+    if (_isLoadingMore || !_hasMore) return;
+
+    setState(() => _isLoadingMore = true);
+
+    try {
+      _currentPage++;
+      final newRecords = await TimeLoggerStorageV2.getPagedRecords(
+        page: _currentPage,
+        pageSize: _pageSize,
+      );
+
+      if (mounted) {
+        setState(() {
+          _records.addAll(newRecords);
+          _isLoadingMore = false;
+          _hasMore = newRecords.length >= _pageSize;
+        });
+      }
+    } catch (e) {
+      print('加载更多失败: $e');
+      if (mounted) {
+        setState(() {
+          _isLoadingMore = false;
+          _currentPage--; // 回退页码
+        });
+      }
+    }
+  }
+
+  /// 下拉刷新
+  Future<void> _refreshRecords() async {
+    _currentPage = 0;
+    _hasMore = true;
+    TimeLoggerStorageV2.clearCache();
+    await _loadInitialRecords();
   }
 
   List<ActivityRecordData> get _filteredRecords {
@@ -91,20 +171,6 @@ class _ActivityHistoryPageState extends State<ActivityHistoryPage> {
     }
   }
 
-  Map<String, int> _getDayStatistics(List<ActivityRecordData> records) {
-    int totalActivities = records.length;
-    int completedActivities = records.where((r) => r.endTime != null).length;
-    int ongoingActivities = records.where((r) => r.endTime == null).length;
-    int linkedToTodos = records.where((r) => r.linkedTodoId != null).length;
-
-    return {
-      'total': totalActivities,
-      'completed': completedActivities,
-      'ongoing': ongoingActivities,
-      'linked': linkedToTodos,
-    };
-  }
-
   int _getTotalDuration(List<ActivityRecordData> records) {
     return records.fold(0, (sum, record) {
       if (record.endTime != null) {
@@ -156,9 +222,11 @@ class _ActivityHistoryPageState extends State<ActivityHistoryPage> {
       ),
       body: _isLoading
           ? const Center(child: CircularProgressIndicator())
-          : _records.isEmpty
-              ? _buildEmptyState()
-              : _buildRecordsList(),
+          : RefreshIndicator(
+              onRefresh: _refreshRecords,
+              child:
+                  _records.isEmpty ? _buildEmptyState() : _buildRecordsList(),
+            ),
     );
   }
 
@@ -170,7 +238,7 @@ class _ActivityHistoryPageState extends State<ActivityHistoryPage> {
           Icon(
             Icons.history,
             size: 80,
-            color: Colors.grey[400],
+            color: Colors.grey[300],
           ),
           const SizedBox(height: 16),
           Text(
@@ -185,7 +253,7 @@ class _ActivityHistoryPageState extends State<ActivityHistoryPage> {
             'Start tracking to see your history',
             style: TextStyle(
               fontSize: 14,
-              color: Colors.grey[500],
+              color: Colors.grey[400],
             ),
           ),
         ],
@@ -196,361 +264,210 @@ class _ActivityHistoryPageState extends State<ActivityHistoryPage> {
   Widget _buildRecordsList() {
     final grouped = _groupedRecords;
 
-    if (grouped.isEmpty) {
-      return Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Icon(
-              Icons.search_off,
-              size: 80,
-              color: Colors.grey[400],
-            ),
-            const SizedBox(height: 16),
-            Text(
-              'No records for this date',
-              style: TextStyle(
-                fontSize: 18,
-                color: Colors.grey[600],
-              ),
-            ),
-            const SizedBox(height: 16),
-            ElevatedButton(
-              onPressed: _clearDateFilter,
-              child: const Text('Show all records'),
-            ),
-          ],
-        ),
-      );
-    }
-
     return ListView.builder(
+      controller: _scrollController,
       padding: const EdgeInsets.all(16),
-      itemCount: grouped.length,
-      // 添加缓存范围以提高性能
-      cacheExtent: 500,
+      itemCount: grouped.length + (_hasMore ? 1 : 0),
       itemBuilder: (context, index) {
+        // 加载更多指示器
+        if (index == grouped.length) {
+          return _buildLoadingMoreIndicator();
+        }
+
         final dateKey = grouped.keys.elementAt(index);
-        final records = grouped[dateKey]!;
-        final date = DateTime.parse(dateKey);
-        final totalDuration = _getTotalDuration(records);
+        final dayRecords = grouped[dateKey]!;
 
-        return Card(
-          key: ValueKey(dateKey), // 添加key以优化重建
-          margin: const EdgeInsets.only(bottom: 16),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              // 日期头部
-              Container(
-                padding: const EdgeInsets.all(16),
-                decoration: BoxDecoration(
-                  color: Theme.of(context).primaryColor.withOpacity(0.1),
-                  borderRadius: const BorderRadius.only(
-                    topLeft: Radius.circular(12),
-                    topRight: Radius.circular(12),
-                  ),
-                ),
-                child: Column(
-                  children: [
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              DateFormat('EEEE').format(date),
-                              style: TextStyle(
-                                fontSize: 16,
-                                fontWeight: FontWeight.w600,
-                                color: Theme.of(context).primaryColor,
-                              ),
-                            ),
-                            Text(
-                              DateFormat('MMMM dd, yyyy').format(date),
-                              style: TextStyle(
-                                fontSize: 14,
-                                color: Colors.grey[600],
-                              ),
-                            ),
-                          ],
-                        ),
-                        Column(
-                          crossAxisAlignment: CrossAxisAlignment.end,
-                          children: [
-                            Text(
-                              '${records.length} activities',
-                              style: TextStyle(
-                                fontSize: 12,
-                                color: Colors.grey[600],
-                              ),
-                            ),
-                            Text(
-                              _formatDuration(totalDuration, showSeconds: true),
-                              style: TextStyle(
-                                fontSize: 16,
-                                fontWeight: FontWeight.bold,
-                                color: Theme.of(context).primaryColor,
-                              ),
-                            ),
-                          ],
-                        ),
-                      ],
-                    ),
-                    // 统计信息
-                    const SizedBox(height: 12),
-                    _buildDayStatistics(records),
-                  ],
-                ),
-              ),
-
-              // 活动列表
-              ...records.map((record) => _buildRecordItem(record)),
-            ],
-          ),
-        );
+        return _buildDaySection(dateKey, dayRecords);
       },
     );
   }
 
-  Widget _buildRecordItem(ActivityRecordData record) {
-    final bool isOngoing = record.endTime == null;
-
-    // 对于已完成的活动，计算实际持续时间
-    // 对于正在进行的活动，为了避免频繁重建，使用固定的时间快照
-    final duration = record.endTime != null
-        ? record.endTime!.difference(record.startTime).inSeconds
-        : 0; // 正在进行的活动不显示精确持续时间，避免性能问题, TODO
-
-    // 使用唯一key来优化列表性能
-    final itemKey = '${record.startTime.millisecondsSinceEpoch}_${record.name}';
-
-    return Container(
-      key: ValueKey(itemKey), // 添加key以优化重建
-      margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-      decoration: BoxDecoration(
-        border: Border.all(
-          color: isOngoing
-              ? Colors.amber.withOpacity(0.3)
-              : Colors.grey.withOpacity(0.2),
-          width: isOngoing ? 2 : 1,
-        ),
-        borderRadius: BorderRadius.circular(8),
-        color: isOngoing ? Colors.amber.withOpacity(0.05) : null,
+  Widget _buildLoadingMoreIndicator() {
+    return Padding(
+      padding: const EdgeInsets.all(16),
+      child: Center(
+        child: _isLoadingMore
+            ? const CircularProgressIndicator()
+            : TextButton(
+                onPressed: _loadMoreRecords,
+                child: const Text('Load More'),
+              ),
       ),
-      child: ListTile(
-        contentPadding: const EdgeInsets.symmetric(
-          horizontal: 16,
-          vertical: 8,
-        ),
-        // 左边那个icon
-        leading: CircleAvatar(
-          backgroundColor: isOngoing
-              ? Colors.amber.withOpacity(0.2)
-              : Theme.of(context).primaryColor.withOpacity(0.1),
-          child: Icon(
-            isOngoing ? Icons.play_arrow : Icons.check,
-            color:
-                isOngoing ? Colors.amber[700] : Theme.of(context).primaryColor,
-            size: 20,
-          ),
-        ),
-        title: Row(
-          children: [
-            Expanded(
-              child: Text(
-                record.name,
-                style: const TextStyle(
-                  fontWeight: FontWeight.w600,
-                  fontSize: 16,
-                ),
+    );
+  }
+
+  Widget _buildDaySection(String dateKey, List<ActivityRecordData> records) {
+    final date = DateTime.parse(dateKey);
+    final totalDuration = _getTotalDuration(records);
+    final isToday = DateFormat('yyyy-MM-dd').format(DateTime.now()) == dateKey;
+    final isYesterday = DateFormat('yyyy-MM-dd')
+            .format(DateTime.now().subtract(const Duration(days: 1))) ==
+        dateKey;
+
+    String dateLabel;
+    if (isToday) {
+      dateLabel = 'Today';
+    } else if (isYesterday) {
+      dateLabel = 'Yesterday';
+    } else {
+      dateLabel = DateFormat('EEEE, MMM d').format(date);
+    }
+
+    return Card(
+      margin: const EdgeInsets.only(bottom: 16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // 日期标题栏
+          Container(
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              color: Theme.of(context).primaryColor.withValues(alpha: 0.1),
+              borderRadius: const BorderRadius.only(
+                topLeft: Radius.circular(12),
+                topRight: Radius.circular(12),
               ),
             ),
-            if (isOngoing)
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-                decoration: BoxDecoration(
-                  color: Colors.amber,
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                child: const Text(
-                  'ONGOING',
-                  style: TextStyle(
-                    fontSize: 10,
-                    fontWeight: FontWeight.bold,
-                    color: Colors.white,
-                  ),
-                ),
-              ),
-          ],
-        ),
-        subtitle: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const SizedBox(height: 6),
-            // 时间范围
-            Row(
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                Icon(
-                  Icons.schedule,
-                  size: 14,
-                  color: Colors.grey[600],
-                ),
-                const SizedBox(width: 4),
                 Text(
-                  '${DateFormat('h:mm a').format(record.startTime)} - ${record.endTime != null ? DateFormat('h:mm:ss a').format(record.endTime!) : 'ongoing'}',
+                  dateLabel,
                   style: TextStyle(
-                    fontSize: 13,
-                    color: Colors.grey[700],
-                    fontWeight: FontWeight.w500,
-                  ),
-                ),
-              ],
-            ),
-            // 关联的待办事项（如果有）
-            if (record.linkedTodoTitle != null) ...[
-              const SizedBox(height: 6),
-              Row(
-                children: [
-                  Icon(
-                    Icons.link,
-                    size: 14,
-                    color: Colors.blue[700],
-                  ),
-                  const SizedBox(width: 4),
-                  Expanded(
-                    child: Text(
-                      ' ${record.linkedTodoTitle!}',
-                      style: TextStyle(
-                        fontSize: 12,
-                        color: Colors.blue[700],
-                        fontWeight: FontWeight.w500,
-                      ),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                  ),
-                ],
-              ),
-            ],
-            const SizedBox(height: 4),
-          ],
-        ),
-        // 右侧持续时间 / 进行中指示. 结构: evaluate isOngoing ? "Running" : duration
-        trailing: isOngoing
-            ? Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                decoration: BoxDecoration(
-                  color: Colors.amber.withOpacity(0.15),
-                  borderRadius: BorderRadius.circular(16),
-                ),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    SizedBox(
-                      width: 12,
-                      height: 12,
-                      child: CircularProgressIndicator(
-                        strokeWidth: 2,
-                        valueColor: AlwaysStoppedAnimation<Color>(
-                          Colors.amber[900]!,
-                        ),
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    Text(
-                      'Running',
-                      style: TextStyle(
-                        fontSize: 14,
-                        fontWeight: FontWeight.bold,
-                        color: Colors.amber[900],
-                      ),
-                    ),
-                  ],
-                ),
-              )
-            : Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                decoration: BoxDecoration(
-                  color: Theme.of(context).primaryColor.withOpacity(0.1),
-                  borderRadius: BorderRadius.circular(16),
-                ),
-                child: Text(
-                  _formatDuration(duration, showSeconds: false),
-                  style: TextStyle(
-                    fontSize: 14,
+                    fontSize: 18,
                     fontWeight: FontWeight.bold,
                     color: Theme.of(context).primaryColor,
                   ),
                 ),
-              ),
+                Row(
+                  children: [
+                    Icon(
+                      Icons.timer,
+                      size: 16,
+                      color: Colors.grey[600],
+                    ),
+                    const SizedBox(width: 4),
+                    Text(
+                      _formatDuration(totalDuration),
+                      style: TextStyle(
+                        fontSize: 14,
+                        fontWeight: FontWeight.w600,
+                        color: Colors.grey[700],
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 8,
+                        vertical: 4,
+                      ),
+                      decoration: BoxDecoration(
+                        color: Theme.of(context).primaryColor,
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: Text(
+                        '${records.length}',
+                        style: const TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.bold,
+                          color: Colors.white,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+          // 活动记录列表
+          ListView.separated(
+            shrinkWrap: true,
+            physics: const NeverScrollableScrollPhysics(),
+            itemCount: records.length,
+            separatorBuilder: (context, index) => const Divider(height: 1),
+            itemBuilder: (context, index) {
+              return _buildRecordItem(records[index]);
+            },
+          ),
+        ],
       ),
     );
   }
 
-  Widget _buildDayStatistics(List<ActivityRecordData> records) {
-    final stats = _getDayStatistics(records);
+  Widget _buildRecordItem(ActivityRecordData record) {
+    final duration = record.endTime != null
+        ? record.endTime!.difference(record.startTime).inSeconds
+        : 0;
 
-    return Row(
-      mainAxisAlignment: MainAxisAlignment.spaceAround,
-      children: [
-        _buildStatItem(
-          icon: Icons.task_alt,
-          label: 'Completed',
-          value: '${stats['completed']}',
-          color: Colors.green,
+    return ListTile(
+      contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      leading: CircleAvatar(
+        backgroundColor: record.endTime != null
+            ? Colors.green.withValues(alpha: 0.2)
+            : Colors.orange.withValues(alpha: 0.2),
+        child: Icon(
+          record.endTime != null ? Icons.check : Icons.play_arrow,
+          color: record.endTime != null ? Colors.green : Colors.orange,
         ),
-        _buildStatItem(
-          icon: Icons.pending_actions,
-          label: 'Ongoing',
-          value: '${stats['ongoing']}',
-          color: Colors.amber,
+      ),
+      title: Text(
+        record.name,
+        style: const TextStyle(
+          fontSize: 16,
+          fontWeight: FontWeight.w500,
         ),
-        _buildStatItem(
-          icon: Icons.link,
-          label: 'Linked',
-          value: '${stats['linked']}',
-          color: Colors.blue,
-        ),
-      ],
-    );
-  }
-
-  Widget _buildStatItem({
-    required IconData icon,
-    required String label,
-    required String value,
-    required Color color,
-  }) {
-    return Column(
-      children: [
-        Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(icon, size: 16, color: color),
-            const SizedBox(width: 4),
-            Text(
-              value,
-              style: TextStyle(
-                fontSize: 16,
-                fontWeight: FontWeight.bold,
-                color: color,
+      ),
+      subtitle: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const SizedBox(height: 4),
+          Row(
+            children: [
+              Icon(Icons.access_time, size: 14, color: Colors.grey[600]),
+              const SizedBox(width: 4),
+              Text(
+                '${DateFormat('HH:mm').format(record.startTime)} - ${record.endTime != null ? DateFormat('HH:mm').format(record.endTime!) : 'Ongoing'}',
+                style: TextStyle(fontSize: 12, color: Colors.grey[600]),
               ),
+            ],
+          ),
+          if (record.linkedTodoTitle != null) ...[
+            const SizedBox(height: 4),
+            Row(
+              children: [
+                Icon(Icons.link, size: 14, color: Colors.grey[600]),
+                const SizedBox(width: 4),
+                Expanded(
+                  child: Text(
+                    record.linkedTodoTitle!,
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: Colors.grey[600],
+                      fontStyle: FontStyle.italic,
+                    ),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+              ],
             ),
           ],
-        ),
-        const SizedBox(height: 2),
-        Text(
-          label,
-          style: TextStyle(
-            fontSize: 11,
-            color: Colors.grey[600],
-          ),
-        ),
-      ],
+        ],
+      ),
+      trailing: record.endTime != null
+          ? Text(
+              _formatDuration(duration),
+              style: const TextStyle(
+                fontSize: 14,
+                fontWeight: FontWeight.bold,
+                color: Colors.green,
+              ),
+            )
+          : const SizedBox(
+              width: 20,
+              height: 20,
+              child: CircularProgressIndicator(strokeWidth: 2),
+            ),
     );
   }
 }

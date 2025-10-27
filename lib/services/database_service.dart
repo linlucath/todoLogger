@@ -43,11 +43,14 @@ class DatabaseService {
         end_time INTEGER,
         linked_todo_id TEXT,
         linked_todo_title TEXT,
-        created_at INTEGER NOT NULL,
-        INDEX idx_start_time (start_time),
-        INDEX idx_name (name)
+        created_at INTEGER NOT NULL
       )
     ''');
+
+    // 创建时间记录表的索引
+    await db.execute(
+        'CREATE INDEX idx_start_time ON activity_records (start_time)');
+    await db.execute('CREATE INDEX idx_name ON activity_records (name)');
 
     // TODO 列表表
     await db.execute('''
@@ -71,11 +74,13 @@ class DatabaseService {
         created_at INTEGER NOT NULL,
         list_id TEXT,
         display_order INTEGER NOT NULL,
-        FOREIGN KEY (list_id) REFERENCES todo_lists (id) ON DELETE CASCADE,
-        INDEX idx_list_id (list_id),
-        INDEX idx_completed (is_completed)
+        FOREIGN KEY (list_id) REFERENCES todo_lists (id) ON DELETE CASCADE
       )
     ''');
+
+    // 创建 TODO 项目表的索引
+    await db.execute('CREATE INDEX idx_list_id ON todo_items (list_id)');
+    await db.execute('CREATE INDEX idx_completed ON todo_items (is_completed)');
 
     // 活动历史表 (用于自动完成)
     await db.execute('''

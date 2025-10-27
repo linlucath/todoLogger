@@ -1,9 +1,9 @@
 import 'package:flutter/material.dart';
-import 'pages/todo.dart';
-import 'pages/timeLogger.dart';
-import 'pages/target.dart';
-import 'pages/statistics.dart';
-import 'pages/immersive_work.dart';
+import 'pages/todo/todo.dart';
+import 'pages/time_logger/time_logger.dart';
+import 'pages/target/target.dart';
+import 'pages/statistics/statistics.dart';
+import 'pages/immersive_work/immersive_work.dart';
 
 void main() {
   runApp(const MyApp());

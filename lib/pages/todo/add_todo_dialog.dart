@@ -79,18 +79,6 @@ class _AddTodoDialogState extends State<AddTodoDialog> {
                 border: OutlineInputBorder(),
               ),
               items: [
-                // 独立 Todo 选项
-                const DropdownMenuItem<String?>(
-                  value: null,
-                  child: Row(
-                    children: [
-                      Icon(Icons.check_box_outline_blank,
-                          size: 16, color: Colors.grey),
-                      SizedBox(width: 8),
-                      Text('独立 Todo（不属于任何列表）'),
-                    ],
-                  ),
-                ),
                 // 各个列表选项
                 ...widget.todoLists.map((list) {
                   return DropdownMenuItem<String?>(

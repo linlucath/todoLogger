@@ -3,7 +3,6 @@ import 'pages/todo/todo.dart';
 import 'pages/time_logger/time_logger.dart';
 import 'pages/target/target.dart';
 import 'pages/statistics/statistics.dart';
-import 'pages/immersive_work/immersive_work.dart';
 import 'utils/performance_monitor.dart';
 import 'services/time_logger_storage.dart';
 
@@ -107,9 +106,6 @@ class _MainPageState extends State<MainPage> {
         break;
       case 3:
         page = const StatisticsPage();
-        break;
-      case 4:
-        page = const ImmersiveWorkPage();
         break;
       default:
         page = const TodoPage();

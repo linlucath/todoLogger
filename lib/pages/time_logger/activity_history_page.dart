@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
-import '../../services/time_logger_storage_v2.dart';
 import '../../services/time_logger_storage.dart';
 
 /// 优化版活动历史页面 - 支持分页和懒加载
@@ -56,7 +55,7 @@ class _ActivityHistoryPageState extends State<ActivityHistoryPage> {
 
     try {
       // 优化: 首次只加载最近 30 天的数据
-      final records = await TimeLoggerStorageV2.getRecentRecords(30);
+      final records = await TimeLoggerStorage.getRecentRecords(30);
 
       if (mounted) {
         setState(() {
@@ -81,7 +80,7 @@ class _ActivityHistoryPageState extends State<ActivityHistoryPage> {
 
     try {
       _currentPage++;
-      final newRecords = await TimeLoggerStorageV2.getPagedRecords(
+      final newRecords = await TimeLoggerStorage.getPagedRecords(
         page: _currentPage,
         pageSize: _pageSize,
       );
@@ -108,7 +107,7 @@ class _ActivityHistoryPageState extends State<ActivityHistoryPage> {
   Future<void> _refreshRecords() async {
     _currentPage = 0;
     _hasMore = true;
-    TimeLoggerStorageV2.clearCache();
+    TimeLoggerStorage.clearCache();
     await _loadInitialRecords();
   }
 

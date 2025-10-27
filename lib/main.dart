@@ -5,7 +5,7 @@ import 'pages/target/target.dart';
 import 'pages/statistics/statistics.dart';
 import 'pages/immersive_work/immersive_work.dart';
 import 'utils/performance_monitor.dart';
-import 'services/time_logger_storage_v2.dart';
+import 'services/time_logger_storage.dart';
 
 void main() async {
   // 性能监控: 记录启动时间
@@ -16,7 +16,7 @@ void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
   // 数据迁移: 从 SharedPreferences 迁移到 SQLite
-  await TimeLoggerStorageV2.migrateFromOldStorage();
+  await TimeLoggerStorage.migrateFromOldStorage();
 
   runApp(const MyApp());
 

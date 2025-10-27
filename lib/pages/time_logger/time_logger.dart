@@ -68,7 +68,6 @@ class _TimeLoggerPageState extends State<TimeLoggerPage> {
   Future<void> _loadSavedData() async {
     final currentActivity = await TimeLoggerStorage.getCurrentActivity();
     final continuousStart = await TimeLoggerStorage.getContinuousStartTime();
-    final allRecords = await TimeLoggerStorage.getAllRecords();
     final activityHistory = await TimeLoggerStorage.getActivityHistory();
 
     if (mounted) {
@@ -92,22 +91,15 @@ class _TimeLoggerPageState extends State<TimeLoggerPage> {
         _continuousStartTime = continuousStart;
         _activityHistory.addAll(activityHistory);
 
-        // 恢复历史记录
-        for (var record in allRecords) {
-          _allRecords.add(ActivityRecord(
-            name: record.name,
-            startTime: record.startTime,
-            endTime: record.endTime,
-            linkedTodoId: record.linkedTodoId,
-            linkedTodoTitle: record.linkedTodoTitle,
-          ));
-        }
+        // _allRecords 不需要恢复历史记录
+        // 它只用于临时存储本次会话中完成的记录
       });
     }
   }
 
   // 保存当前状态
   Future<void> _saveCurrentState() async {
+    // 保存当前活动状态
     if (_currentActivity != null) {
       await TimeLoggerStorage.saveCurrentActivity(ActivityRecordData(
         name: _currentActivity!.name,
@@ -120,20 +112,8 @@ class _TimeLoggerPageState extends State<TimeLoggerPage> {
       await TimeLoggerStorage.saveCurrentActivity(null);
     }
 
+    // 保存连续记录开始时间
     await TimeLoggerStorage.saveContinuousStartTime(_continuousStartTime);
-    await TimeLoggerStorage.saveActivityHistory(_activityHistory);
-
-    // 保存所有记录
-    final recordsData = _allRecords
-        .map((r) => ActivityRecordData(
-              name: r.name,
-              startTime: r.startTime,
-              endTime: r.endTime,
-              linkedTodoId: r.linkedTodoId,
-              linkedTodoTitle: r.linkedTodoTitle,
-            ))
-        .toList();
-    await TimeLoggerStorage.saveAllRecords(recordsData);
   }
 
   @override
@@ -186,8 +166,14 @@ class _TimeLoggerPageState extends State<TimeLoggerPage> {
       _allRecords.add(_currentActivity!);
     });
 
-    // 保存已完成的活动记录
-    await _saveCurrentState();
+    // 立即保存已完成的活动记录到数据库
+    await TimeLoggerStorage.addRecord(ActivityRecordData(
+      name: _currentActivity!.name,
+      startTime: _currentActivity!.startTime,
+      endTime: _currentActivity!.endTime,
+      linkedTodoId: _currentActivity!.linkedTodoId,
+      linkedTodoTitle: _currentActivity!.linkedTodoTitle,
+    ));
 
     // 弹出对话框：接下来做什么
     final result = await _showNextActivityDialog();

@@ -47,7 +47,7 @@ class TodoItemWidget extends StatelessWidget {
       data: MediaQuery.of(context).copyWith(textScaleFactor: 1.0),
       child: LongPressDraggable<TodoItem>(
         data: todo,
-        delay: const Duration(milliseconds: 500),
+        delay: const Duration(milliseconds: 300),
         onDragStarted: () {
           debugPrint(
               'Todo drag started: ${todo.id} (from list ${todo.listId})');
@@ -673,11 +673,11 @@ class _TodoPageState extends State<TodoPage> {
         child: Container(
           decoration: BoxDecoration(
             gradient: LinearGradient(
-              begin: Alignment.topLeft,
+              begin: Alignment.topCenter,
               end: Alignment.bottomRight,
               colors: [
-                const Color.fromARGB(255, 243, 243, 243),
-                const Color.fromARGB(255, 229, 209, 233),
+                const Color.fromARGB(255, 215, 172, 228),
+                const Color.fromARGB(255, 237, 234, 238),
               ],
             ),
             boxShadow: [

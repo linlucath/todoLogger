@@ -1,37 +1,32 @@
 import 'package:flutter/material.dart';
 import 'dart:async';
 import 'package:intl/intl.dart';
+import '../../services/time_logger_storage.dart';
+import 'activity_history_page.dart';
+import './next_activity_dialog.dart';
+import './start_record_dialog.dart';
 
-class ActivityCategory {
-  final String id;
+// 记录数据类
+class ActivityRecord {
   final String name;
-  final IconData icon;
-  final Color color;
-  int todaySeconds;
-
-  ActivityCategory({
-    required this.id,
-    required this.name,
-    required this.icon,
-    required this.color,
-    this.todaySeconds = 0,
-  });
-}
-
-class TimeEntry {
-  final String id;
-  final String activityId;
   final DateTime startTime;
   DateTime? endTime;
-  int durationSeconds;
+  String? linkedTodoId;
+  String? linkedTodoTitle;
 
-  TimeEntry({
-    required this.id,
-    required this.activityId,
+  // 数据类构造函数
+  ActivityRecord({
+    required this.name,
     required this.startTime,
     this.endTime,
-    this.durationSeconds = 0,
+    this.linkedTodoId,
+    this.linkedTodoTitle,
   });
+
+  int get durationSeconds {
+    final end = endTime ?? DateTime.now();
+    return end.difference(startTime).inSeconds;
+  }
 }
 
 class TimeLoggerPage extends StatefulWidget {
@@ -43,78 +38,102 @@ class TimeLoggerPage extends StatefulWidget {
 
 class _TimeLoggerPageState extends State<TimeLoggerPage> {
   Timer? _timer;
-  int _elapsedSeconds = 0;
-  bool _isRunning = false;
-  String? _currentActivityId;
-  DateTime? _startTime;
+  bool _isRecording = false;
 
-  final List<ActivityCategory> _activities = [
-    ActivityCategory(
-      id: '1',
-      name: 'Work',
-      icon: Icons.work,
-      color: const Color(0xFF6C63FF),
-      todaySeconds: 7200, // 2小时
-    ),
-    ActivityCategory(
-      id: '2',
-      name: 'Study',
-      icon: Icons.school,
-      color: const Color(0xFF4CAF50),
-      todaySeconds: 5400, // 1.5小时
-    ),
-    ActivityCategory(
-      id: '3',
-      name: 'Exercise',
-      icon: Icons.fitness_center,
-      color: const Color(0xFFFF6584),
-      todaySeconds: 1800, // 30分钟
-    ),
-    ActivityCategory(
-      id: '4',
-      name: 'Reading',
-      icon: Icons.menu_book,
-      color: const Color(0xFFFF9800),
-      todaySeconds: 3600, // 1小时
-    ),
-    ActivityCategory(
-      id: '5',
-      name: 'Entertainment',
-      icon: Icons.movie,
-      color: const Color(0xFF9C27B0),
-      todaySeconds: 2700, // 45分钟
-    ),
-    ActivityCategory(
-      id: '6',
-      name: 'Sleep',
-      icon: Icons.bed,
-      color: const Color(0xFF607D8B),
-      todaySeconds: 28800, // 8小时
-    ),
-  ];
+  // 当前活动
+  ActivityRecord? _currentActivity;
 
-  final List<TimeEntry> _todayEntries = [];
+  // 连续记录的开始时间
+  DateTime? _continuousStartTime;
+
+  // 所有记录的活动历史
+  final List<ActivityRecord> _allRecords = [];
+
+  // 用户使用过的活动名称（用于快速选择）
+  final Set<String> _activityHistory = {};
+
+  // 当前活动的经过秒数（基于实际时间计算）
+  int get _currentActivitySeconds {
+    if (_currentActivity == null) return 0;
+    return DateTime.now().difference(_currentActivity!.startTime).inSeconds;
+  }
 
   @override
   void initState() {
     super.initState();
-    // 添加一些示例数据
-    _todayEntries.addAll([
-      TimeEntry(
-        id: '1',
-        activityId: '1',
-        startTime: DateTime.now().subtract(const Duration(hours: 2)),
-        endTime: DateTime.now().subtract(const Duration(hours: 1)),
-        durationSeconds: 3600,
-      ),
-      TimeEntry(
-        id: '2',
-        activityId: '2',
-        startTime: DateTime.now().subtract(const Duration(hours: 1)),
-        endTime: DateTime.now().subtract(const Duration(minutes: 30)),
-        durationSeconds: 1800,
-      ),
-    ]);
+    _loadSavedData();
+  }
+
+  // 加载保存的数据
+  Future<void> _loadSavedData() async {
+    final currentActivity = await TimeLoggerStorage.getCurrentActivity();
+    final continuousStart = await TimeLoggerStorage.getContinuousStartTime();
+    final allRecords = await TimeLoggerStorage.getAllRecords();
+    final activityHistory = await TimeLoggerStorage.getActivityHistory();
+
+    if (mounted) {
+      setState(() {
+        if (currentActivity != null) {
+          _currentActivity = ActivityRecord(
+            name: currentActivity.name,
+            startTime: currentActivity.startTime,
+            endTime: currentActivity.endTime,
+            linkedTodoId: currentActivity.linkedTodoId,
+            linkedTodoTitle: currentActivity.linkedTodoTitle,
+          );
+          _isRecording = true;
+
+          // 恢复计时器
+          _timer = Timer.periodic(const Duration(seconds: 1), (timer) {
+            setState(() {});
+          });
+        }
+
+        _continuousStartTime = continuousStart;
+        _activityHistory.addAll(activityHistory);
+
+        // 恢复历史记录
+        for (var record in allRecords) {
+          _allRecords.add(ActivityRecord(
+            name: record.name,
+            startTime: record.startTime,
+            endTime: record.endTime,
+            linkedTodoId: record.linkedTodoId,
+            linkedTodoTitle: record.linkedTodoTitle,
+          ));
+        }
+      });
+    }
+  }
+
+  // 保存当前状态
+  Future<void> _saveCurrentState() async {
+    if (_currentActivity != null) {
+      await TimeLoggerStorage.saveCurrentActivity(ActivityRecordData(
+        name: _currentActivity!.name,
+        startTime: _currentActivity!.startTime,
+        endTime: _currentActivity!.endTime,
+        linkedTodoId: _currentActivity!.linkedTodoId,
+        linkedTodoTitle: _currentActivity!.linkedTodoTitle,
+      ));
+    } else {
+      await TimeLoggerStorage.saveCurrentActivity(null);
+    }
+
+    await TimeLoggerStorage.saveContinuousStartTime(_continuousStartTime);
+    await TimeLoggerStorage.saveActivityHistory(_activityHistory);
+
+    // 保存所有记录
+    final recordsData = _allRecords
+        .map((r) => ActivityRecordData(
+              name: r.name,
+              startTime: r.startTime,
+              endTime: r.endTime,
+              linkedTodoId: r.linkedTodoId,
+              linkedTodoTitle: r.linkedTodoTitle,
+            ))
+        .toList();
+    await TimeLoggerStorage.saveAllRecords(recordsData);
   }
 
   @override
@@ -123,66 +142,104 @@ class _TimeLoggerPageState extends State<TimeLoggerPage> {
     super.dispose();
   }
 
-  void _startTimer(String activityId) {
+  void _startRecording(String activityName,
+      {String? todoId, String? todoTitle}) {
+    final now = DateTime.now();
+
     setState(() {
-      _isRunning = true;
-      _currentActivityId = activityId;
-      _startTime = DateTime.now();
-      _elapsedSeconds = 0;
+      _currentActivity = ActivityRecord(
+        name: activityName,
+        startTime: now,
+        linkedTodoId: todoId,
+        linkedTodoTitle: todoTitle,
+      );
+      _isRecording = true;
+
+      // 如果是第一次开始记录，设置连续记录开始时间
+      if (_continuousStartTime == null) {
+        _continuousStartTime = now;
+      }
+
+      _activityHistory.add(activityName);
     });
 
+    // 保存状态
+    _saveCurrentState();
+
+    // 每秒更新界面以刷新时间显示
     _timer = Timer.periodic(const Duration(seconds: 1), (timer) {
       setState(() {
-        _elapsedSeconds++;
+        // 不需要递增变量，直接通过 getter 计算实际时间差
       });
     });
   }
 
-  void _pauseTimer() {
-    setState(() {
-      _isRunning = false;
-    });
+  void _finishAndStartNext() async {
+    if (_currentActivity == null) return;
+
+    // 暂停计时器
     _timer?.cancel();
-  }
 
-  void _stopTimer() {
-    if (_currentActivityId != null && _startTime != null) {
-      // 保存记录
-      final entry = TimeEntry(
-        id: DateTime.now().toString(),
-        activityId: _currentActivityId!,
-        startTime: _startTime!,
-        endTime: DateTime.now(),
-        durationSeconds: _elapsedSeconds,
+    // 结束当前活动
+    setState(() {
+      _currentActivity!.endTime = DateTime.now();
+      _allRecords.add(_currentActivity!);
+    });
+
+    // 保存已完成的活动记录
+    await _saveCurrentState();
+
+    // 弹出对话框：接下来做什么
+    final result = await _showNextActivityDialog();
+
+    if (result != null) {
+      // 开始新活动
+      _startRecording(
+        result['name'] as String,
+        todoId: result['todoId'] as String?,
+        todoTitle: result['todoTitle'] as String?,
       );
-
+    } else {
+      // 用户取消，停止记录
       setState(() {
-        _todayEntries.add(entry);
-        // 更新活动的今日总时长
-        final activity =
-            _activities.firstWhere((a) => a.id == _currentActivityId);
-        activity.todaySeconds += _elapsedSeconds;
-
-        _isRunning = false;
-        _currentActivityId = null;
-        _startTime = null;
-        _elapsedSeconds = 0;
+        _isRecording = false;
+        _currentActivity = null;
+        _continuousStartTime = null;
       });
-      _timer?.cancel();
+
+      // 保存停止状态
+      await _saveCurrentState();
     }
   }
 
-  String _formatDuration(int seconds) {
-    final hours = seconds ~/ 3600;
-    final minutes = (seconds % 3600) ~/ 60;
-    final secs = seconds % 60;
+  Future<Map<String, dynamic>?> _showNextActivityDialog() async {
+    return showDialog<Map<String, dynamic>>(
+      context: context,
+      barrierDismissible: false,
+      builder: (BuildContext context) {
+        return NextActivityDialog(
+          activityHistory: _activityHistory.toList(),
+        );
+      },
+    );
+  }
 
-    if (hours > 0) {
-      return '${hours}h ${minutes}m';
-    } else if (minutes > 0) {
-      return '${minutes}m ${secs}s';
-    } else {
-      return '${secs}s';
+  void _showStartActivityDialog() async {
+    final result = await showDialog<Map<String, dynamic>>(
+      context: context,
+      builder: (BuildContext context) {
+        return StartActivityDialog(
+          activityHistory: _activityHistory.toList(),
+        );
+      },
+    );
+
+    if (result != null) {
+      _startRecording(
+        result['name'] as String,
+        todoId: result['todoId'] as String?,
+        todoTitle: result['todoTitle'] as String?,
+      );
     }
   }
 
@@ -193,16 +250,13 @@ class _TimeLoggerPageState extends State<TimeLoggerPage> {
     return '${hours.toString().padLeft(2, '0')}:${minutes.toString().padLeft(2, '0')}:${secs.toString().padLeft(2, '0')}';
   }
 
-  int get _totalTodaySeconds {
-    return _activities.fold(0, (sum, activity) => sum + activity.todaySeconds);
+  int get _continuousTotalSeconds {
+    if (_continuousStartTime == null) return 0;
+    return DateTime.now().difference(_continuousStartTime!).inSeconds;
   }
 
   @override
   Widget build(BuildContext context) {
-    final currentActivity = _currentActivityId != null
-        ? _activities.firstWhere((a) => a.id == _currentActivityId)
-        : null;
-
     return Scaffold(
       appBar: AppBar(
         title: const Text('Time Logger'),
@@ -210,254 +264,253 @@ class _TimeLoggerPageState extends State<TimeLoggerPage> {
           IconButton(
             icon: const Icon(Icons.history),
             onPressed: () {
-              // TODO: 显示历史记录
+              Navigator.of(context).push(
+                MaterialPageRoute(
+                  builder: (context) => const ActivityHistoryPage(),
+                ),
+              );
             },
           ),
         ],
       ),
-      body: Column(
+      body: _isRecording ? _buildRecordingView() : _buildIdleView(),
+    );
+  }
+
+  // 未开始记录的视图
+  Widget _buildIdleView() {
+    return Center(
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          // 今日总计时间卡片
-          Container(
-            width: double.infinity,
-            padding: const EdgeInsets.all(20),
-            decoration: BoxDecoration(
-              gradient: LinearGradient(
-                colors: [
-                  Theme.of(context).primaryColor,
-                  Theme.of(context).primaryColor.withOpacity(0.8),
-                ],
+          Icon(
+            Icons.timer_outlined,
+            size: 80,
+            color: Colors.grey[400],
+          ),
+          const SizedBox(height: 24),
+          Text(
+            'Ready to start?',
+            style: TextStyle(
+              fontSize: 24,
+              fontWeight: FontWeight.w600,
+              color: Colors.grey[700],
+            ),
+          ),
+          const SizedBox(height: 12),
+          Text(
+            'Begin tracking your activities',
+            style: TextStyle(
+              fontSize: 16,
+              color: Colors.grey[500],
+            ),
+          ),
+          const SizedBox(height: 40),
+          ElevatedButton.icon(
+            onPressed: _showStartActivityDialog,
+            icon: const Icon(Icons.play_arrow, size: 28),
+            label: const Text(
+              'Start Recording',
+              style: TextStyle(fontSize: 18),
+            ),
+            style: ElevatedButton.styleFrom(
+              padding: const EdgeInsets.symmetric(
+                horizontal: 32,
+                vertical: 16,
+              ),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(30),
               ),
             ),
-            child: Column(
-              children: [
+          ),
+        ],
+      ),
+    );
+  }
+
+  // 记录中的视图
+  Widget _buildRecordingView() {
+    return Column(
+      children: [
+        // 连续记录时间卡片
+        Container(
+          width: double.infinity,
+          padding: const EdgeInsets.all(24),
+          decoration: BoxDecoration(
+            gradient: LinearGradient(
+              colors: [
+                Theme.of(context).primaryColor,
+                Theme.of(context).primaryColor.withOpacity(0.8),
+              ],
+            ),
+          ),
+          child: Column(
+            children: [
+              const Text(
+                '🎯 Continuous Tracking',
+                style: TextStyle(
+                  color: Colors.white,
+                  fontSize: 16,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+              const SizedBox(height: 8),
+              if (_continuousStartTime != null)
                 Text(
-                  DateFormat('EEEE, MMMM dd').format(DateTime.now()),
+                  'Started at ${DateFormat('h:mm a').format(_continuousStartTime!)}',
                   style: const TextStyle(
                     color: Colors.white70,
                     fontSize: 14,
                   ),
                 ),
-                const SizedBox(height: 8),
-                const Text(
-                  'Today\'s Total',
-                  style: TextStyle(
-                    color: Colors.white,
-                    fontSize: 16,
-                  ),
-                ),
-                const SizedBox(height: 4),
-                Text(
-                  _formatDuration(_totalTodaySeconds),
-                  style: const TextStyle(
-                    color: Colors.white,
-                    fontSize: 36,
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
-              ],
-            ),
-          ),
-
-          // 当前活动的大型计时器
-          if (_isRunning && currentActivity != null)
-            Container(
-              margin: const EdgeInsets.all(16),
-              padding: const EdgeInsets.all(24),
-              decoration: BoxDecoration(
-                color: currentActivity.color.withOpacity(0.1),
-                borderRadius: BorderRadius.circular(16),
-                border: Border.all(
-                  color: currentActivity.color.withOpacity(0.3),
-                  width: 2,
+              const SizedBox(height: 12),
+              Text(
+                _formatTime(_continuousTotalSeconds),
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 42,
+                  fontWeight: FontWeight.bold,
+                  fontFeatures: [FontFeature.tabularFigures()],
                 ),
               ),
+              const SizedBox(height: 4),
+              const Text(
+                '✨ Keep going!',
+                style: TextStyle(
+                  color: Colors.white70,
+                  fontSize: 14,
+                  fontStyle: FontStyle.italic,
+                ),
+              ),
+            ],
+          ),
+        ),
+
+        // 当前活动卡片
+        Expanded(
+          child: Center(
+            child: Padding(
+              padding: const EdgeInsets.all(24),
               child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      Icon(
-                        currentActivity.icon,
-                        color: currentActivity.color,
-                        size: 32,
-                      ),
-                      const SizedBox(width: 12),
-                      Text(
-                        currentActivity.name,
-                        style: TextStyle(
-                          fontSize: 24,
-                          fontWeight: FontWeight.bold,
-                          color: currentActivity.color,
+                  // 活动名称
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 24,
+                      vertical: 12,
+                    ),
+                    decoration: BoxDecoration(
+                      color: Theme.of(context).primaryColor.withOpacity(0.1),
+                      borderRadius: BorderRadius.circular(30),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(
+                          Icons.circle,
+                          size: 12,
+                          color: Theme.of(context).primaryColor,
                         ),
-                      ),
-                    ],
+                        const SizedBox(width: 8),
+                        Text(
+                          _currentActivity?.name ?? '',
+                          style: TextStyle(
+                            fontSize: 20,
+                            fontWeight: FontWeight.w600,
+                            color: Theme.of(context).primaryColor,
+                          ),
+                        ),
+                      ],
+                    ),
                   ),
-                  const SizedBox(height: 16),
+                  const SizedBox(height: 24),
+
+                  // 当前活动时长
                   Text(
-                    _formatTime(_elapsedSeconds),
+                    _formatTime(_currentActivitySeconds),
                     style: TextStyle(
-                      fontSize: 48,
+                      fontSize: 56,
                       fontWeight: FontWeight.bold,
-                      color: currentActivity.color,
+                      color: Theme.of(context).primaryColor,
                       fontFeatures: const [FontFeature.tabularFigures()],
                     ),
                   ),
-                  const SizedBox(height: 16),
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      ElevatedButton.icon(
-                        onPressed: _pauseTimer,
-                        icon: const Icon(Icons.pause),
-                        label: const Text('Pause'),
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: Colors.orange,
-                          foregroundColor: Colors.white,
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 24,
-                            vertical: 12,
-                          ),
-                        ),
-                      ),
-                      const SizedBox(width: 12),
-                      ElevatedButton.icon(
-                        onPressed: _stopTimer,
-                        icon: const Icon(Icons.stop),
-                        label: const Text('Stop'),
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: Colors.red,
-                          foregroundColor: Colors.white,
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 24,
-                            vertical: 12,
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                ],
-              ),
-            ),
 
-          // 活动分类网格
-          Expanded(
-            child: Padding(
-              padding: const EdgeInsets.all(16),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Text(
-                    'Activities',
+                  const SizedBox(height: 16),
+
+                  // 关联的TODO
+                  if (_currentActivity?.linkedTodoTitle != null)
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 16,
+                        vertical: 8,
+                      ),
+                      decoration: BoxDecoration(
+                        color: Colors.amber.withOpacity(0.1),
+                        borderRadius: BorderRadius.circular(20),
+                        border: Border.all(
+                          color: Colors.amber.withOpacity(0.3),
+                        ),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const Icon(
+                            Icons.check_box_outlined,
+                            size: 16,
+                            color: Colors.amber,
+                          ),
+                          const SizedBox(width: 8),
+                          Text(
+                            _currentActivity!.linkedTodoTitle!,
+                            style: const TextStyle(
+                              fontSize: 14,
+                              color: Colors.amber,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+
+                  const SizedBox(height: 40),
+
+                  // 提示文字
+                  Text(
+                    '👉 Finish this to start next',
                     style: TextStyle(
-                      fontSize: 18,
-                      fontWeight: FontWeight.bold,
+                      fontSize: 14,
+                      color: Colors.grey[500],
+                      fontStyle: FontStyle.italic,
                     ),
                   ),
-                  const SizedBox(height: 12),
-                  Expanded(
-                    child: GridView.builder(
-                      gridDelegate:
-                          const SliverGridDelegateWithFixedCrossAxisCount(
-                        crossAxisCount: 2,
-                        childAspectRatio: 1.3,
-                        crossAxisSpacing: 12,
-                        mainAxisSpacing: 12,
-                      ),
-                      itemCount: _activities.length,
-                      itemBuilder: (context, index) {
-                        final activity = _activities[index];
-                        final isActive = _currentActivityId == activity.id;
 
-                        return InkWell(
-                          onTap: () {
-                            if (!_isRunning) {
-                              _startTimer(activity.id);
-                            } else if (isActive) {
-                              _pauseTimer();
-                            } else {
-                              // 切换到新活动
-                              _stopTimer();
-                              _startTimer(activity.id);
-                            }
-                          },
-                          child: Card(
-                            elevation: isActive ? 8 : 2,
-                            color: isActive
-                                ? activity.color.withOpacity(0.2)
-                                : Colors.white,
-                            shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(12),
-                              side: BorderSide(
-                                color: isActive
-                                    ? activity.color
-                                    : Colors.transparent,
-                                width: 2,
-                              ),
-                            ),
-                            child: Padding(
-                              padding: const EdgeInsets.all(12),
-                              child: Column(
-                                mainAxisAlignment: MainAxisAlignment.center,
-                                children: [
-                                  Icon(
-                                    activity.icon,
-                                    size: 32,
-                                    color: activity.color,
-                                  ),
-                                  const SizedBox(height: 8),
-                                  Text(
-                                    activity.name,
-                                    style: TextStyle(
-                                      fontSize: 14,
-                                      fontWeight: FontWeight.w600,
-                                      color: isActive
-                                          ? activity.color
-                                          : Colors.black87,
-                                    ),
-                                  ),
-                                  const SizedBox(height: 4),
-                                  Text(
-                                    _formatDuration(activity.todaySeconds),
-                                    style: TextStyle(
-                                      fontSize: 12,
-                                      color: Colors.grey[600],
-                                    ),
-                                  ),
-                                  if (isActive && _isRunning)
-                                    Container(
-                                      margin: const EdgeInsets.only(top: 4),
-                                      padding: const EdgeInsets.symmetric(
-                                        horizontal: 8,
-                                        vertical: 2,
-                                      ),
-                                      decoration: BoxDecoration(
-                                        color: activity.color,
-                                        borderRadius: BorderRadius.circular(8),
-                                      ),
-                                      child: const Text(
-                                        'Running',
-                                        style: TextStyle(
-                                          color: Colors.white,
-                                          fontSize: 10,
-                                          fontWeight: FontWeight.bold,
-                                        ),
-                                      ),
-                                    ),
-                                ],
-                              ),
-                            ),
-                          ),
-                        );
-                      },
+                  const SizedBox(height: 20),
+
+                  // 结束并开始下一个按钮
+                  ElevatedButton.icon(
+                    onPressed: _finishAndStartNext,
+                    icon: const Icon(Icons.skip_next, size: 24),
+                    label: const Text(
+                      'Finish & Start Next',
+                      style: TextStyle(fontSize: 16),
+                    ),
+                    style: ElevatedButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 28,
+                        vertical: 14,
+                      ),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(30),
+                      ),
                     ),
                   ),
                 ],
               ),
             ),
           ),
-        ],
-      ),
+        ),
+      ],
     );
   }
 }

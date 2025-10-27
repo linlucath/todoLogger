@@ -45,4 +45,5 @@ app.*.map.json
 /android/app/release
 
 # develop note
-Note.md
+*.md
+!/README.md

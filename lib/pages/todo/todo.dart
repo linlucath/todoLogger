@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'add_todo_dialog.dart';
 import 'add_list_dialog.dart';
+import '../../services/todo_storage.dart';
 
 // TodoItem 数据模型（单个 Todo）
 class TodoItem {
@@ -443,11 +444,69 @@ class TodoPage extends StatefulWidget {
 
 class _TodoPageState extends State<TodoPage> {
   final List<TodoList> _todoLists = [];
+  bool _isLoading = true;
 
   @override
   void initState() {
     super.initState();
-    // 添加示例数据
+    _loadData();
+  }
+
+  // 从存储加载数据
+  Future<void> _loadData() async {
+    setState(() => _isLoading = true);
+
+    debugPrint('📂 Loading TODO data...');
+
+    final data = await TodoStorage.getAllData();
+    final itemsMap = data['items'] as Map<String, TodoItemData>;
+    final listsData = data['lists'] as List<TodoListData>;
+
+    debugPrint(
+        '📊 Loaded: ${itemsMap.length} items, ${listsData.length} lists');
+
+    if (mounted) {
+      setState(() {
+        _todoLists.clear();
+
+        // 重建 TodoList 对象
+        for (var listData in listsData) {
+          final items = listData.itemIds
+              .where((id) => itemsMap.containsKey(id))
+              .map((id) {
+            final itemData = itemsMap[id]!;
+            return TodoItem(
+              id: itemData.id,
+              title: itemData.title,
+              description: itemData.description,
+              isCompleted: itemData.isCompleted,
+              createdAt: itemData.createdAt,
+              listId: itemData.listId,
+            );
+          }).toList();
+
+          _todoLists.add(TodoList(
+            id: listData.id,
+            name: listData.name,
+            isExpanded: listData.isExpanded,
+            color: listData.color,
+            items: items,
+          ));
+        }
+
+        // 如果没有数据，添加示例数据
+        if (_todoLists.isEmpty) {
+          debugPrint('⚠️ No data found, adding sample data');
+          _addSampleData();
+        }
+
+        _isLoading = false;
+      });
+    }
+  }
+
+  // 添加示例数据
+  void _addSampleData() {
     _todoLists.addAll([
       TodoList(
         id: '1',
@@ -497,6 +556,49 @@ class _TodoPageState extends State<TodoPage> {
         ],
       ),
     ]);
+
+    // 保存示例数据
+    _saveData();
+  }
+
+  // 保存数据到存储
+  Future<void> _saveData() async {
+    debugPrint('💾 Saving TODO data...');
+
+    // 构建 items map
+    final Map<String, TodoItemData> itemsMap = {};
+    for (var list in _todoLists) {
+      for (var item in list.items) {
+        itemsMap[item.id] = TodoItemData(
+          id: item.id,
+          title: item.title,
+          description: item.description,
+          isCompleted: item.isCompleted,
+          createdAt: item.createdAt,
+          listId: item.listId,
+        );
+      }
+    }
+
+    // 构建 lists data
+    final listsData = _todoLists
+        .map((list) => TodoListData(
+              id: list.id,
+              name: list.name,
+              isExpanded: list.isExpanded,
+              colorValue: list.color.value,
+              itemIds: list.items.map((item) => item.id).toList(),
+            ))
+        .toList();
+
+    await TodoStorage.saveAllData(
+      items: itemsMap,
+      lists: listsData,
+      independentTodoIds: [], // 暂时不支持独立 TODO
+    );
+
+    debugPrint(
+        '✅ TODO data saved: ${itemsMap.length} items, ${listsData.length} lists');
   }
 
   void _showAddOptions() {
@@ -533,7 +635,7 @@ class _TodoPageState extends State<TodoPage> {
     showDialog(
       context: context,
       builder: (context) => AddListDialog(
-        onAdd: (name, color) {
+        onAdd: (name, color) async {
           setState(() {
             _todoLists.add(TodoList(
               id: DateTime.now().toString(),
@@ -541,6 +643,7 @@ class _TodoPageState extends State<TodoPage> {
               color: color,
             ));
           });
+          await _saveData(); // 保存数据
         },
       ),
     );
@@ -551,7 +654,7 @@ class _TodoPageState extends State<TodoPage> {
       context: context,
       builder: (context) => AddTodoDialog(
         todoLists: _todoLists,
-        onAdd: (title, description, listId) {
+        onAdd: (title, description, listId) async {
           setState(() {
             if (listId != null) {
               // 添加到指定列表
@@ -565,24 +668,27 @@ class _TodoPageState extends State<TodoPage> {
               ));
             }
           });
+          await _saveData(); // 保存数据
         },
       ),
     );
   }
 
-  void _toggleTodo(String listId, String todoId) {
+  void _toggleTodo(String listId, String todoId) async {
     setState(() {
       final list = _todoLists.firstWhere((l) => l.id == listId);
       final todo = list.items.firstWhere((t) => t.id == todoId);
       todo.isCompleted = !todo.isCompleted;
     });
+    await _saveData(); // 保存数据
   }
 
-  void _deleteTodo(String listId, String todoId) {
+  void _deleteTodo(String listId, String todoId) async {
     setState(() {
       final list = _todoLists.firstWhere((l) => l.id == listId);
       list.items.removeWhere((t) => t.id == todoId);
     });
+    await _saveData(); // 保存数据
   }
 
   void _editTodo(TodoItem todo) {
@@ -594,7 +700,7 @@ class _TodoPageState extends State<TodoPage> {
         initialDescription: todo.description,
         initialListId: todo.listId,
         isEdit: true,
-        onAdd: (title, description, newListId) {
+        onAdd: (title, description, newListId) async {
           setState(() {
             final oldListId = todo.listId;
 
@@ -616,6 +722,7 @@ class _TodoPageState extends State<TodoPage> {
             todo.title = title;
             todo.description = description;
           });
+          await _saveData(); // 保存数据
         },
       ),
     );
@@ -633,10 +740,11 @@ class _TodoPageState extends State<TodoPage> {
             child: const Text('取消'),
           ),
           TextButton(
-            onPressed: () {
+            onPressed: () async {
               setState(() {
                 _todoLists.removeWhere((l) => l.id == listId);
               });
+              await _saveData(); // 保存数据
               Navigator.pop(context);
             },
             child: const Text('删除', style: TextStyle(color: Colors.red)),
@@ -653,11 +761,12 @@ class _TodoPageState extends State<TodoPage> {
         initialName: list.name,
         initialColor: list.color,
         isEdit: true,
-        onAdd: (name, color) {
+        onAdd: (name, color) async {
           setState(() {
             list.name = name;
             list.color = color;
           });
+          await _saveData(); // 保存数据
         },
       ),
     );
@@ -721,112 +830,120 @@ class _TodoPageState extends State<TodoPage> {
           ),
         ),
       ),
-      body: Padding(
-        padding: const EdgeInsets.only(top: 40),
-        child: isEmpty
-            ? Center(
-                child: Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Icon(
-                      Icons.checklist,
-                      size: 80,
-                      color: Colors.grey[300],
-                    ),
-                    const SizedBox(height: 16),
-                    Text(
-                      '还没有任何任务',
-                      style: TextStyle(
-                        fontSize: 18,
-                        color: Colors.grey[400],
+      body: _isLoading
+          ? const Center(child: CircularProgressIndicator())
+          : Padding(
+              padding: const EdgeInsets.only(top: 40),
+              child: isEmpty
+                  ? Center(
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Icon(
+                            Icons.checklist,
+                            size: 80,
+                            color: Colors.grey[300],
+                          ),
+                          const SizedBox(height: 16),
+                          Text(
+                            '还没有任何任务',
+                            style: TextStyle(
+                              fontSize: 18,
+                              color: Colors.grey[400],
+                            ),
+                          ),
+                          const SizedBox(height: 8),
+                          Text(
+                            '点击 + 开始添加',
+                            style: TextStyle(
+                              fontSize: 14,
+                              color: Colors.grey[400],
+                            ),
+                          ),
+                        ],
                       ),
-                    ),
-                    const SizedBox(height: 8),
-                    Text(
-                      '点击 + 开始添加',
-                      style: TextStyle(
-                        fontSize: 14,
-                        color: Colors.grey[400],
-                      ),
-                    ),
-                  ],
-                ),
-              )
-            : CustomScrollView(
-                slivers: [
-                  // 列表区域
-                  SliverReorderableList(
-                    itemCount: _todoLists.length,
-                    onReorder: (oldIndex, newIndex) {
-                      setState(() {
-                        if (newIndex > oldIndex) {
-                          newIndex -= 1;
-                        }
-                        final movingList = _todoLists[oldIndex];
-                        debugPrint(
-                            'Reordering lists ${movingList.id}: $oldIndex -> $newIndex');
-                        final list = _todoLists.removeAt(oldIndex);
-                        _todoLists.insert(newIndex, list);
-                      });
-                    },
-                    itemBuilder: (context, index) {
-                      final todoList = _todoLists[index];
-                      return Padding(
-                        key: ValueKey(todoList.id),
-                        padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
-                        child: TodoListWidget(
-                          index: index,
-                          todoList: todoList,
-                          onToggleExpand: () {
-                            setState(() {
-                              todoList.isExpanded = !todoList.isExpanded;
-                            });
-                          },
-                          onToggleTodo: (todoId) =>
-                              _toggleTodo(todoList.id, todoId),
-                          onDeleteTodo: (todoId) =>
-                              _deleteTodo(todoList.id, todoId),
-                          onEditTodo: (todo) => _editTodo(todo),
-                          onDeleteList: () => _deleteList(todoList.id),
-                          onEditList: () => _editList(todoList),
-                          onAcceptDrop: (todo) {
-                            setState(() {
-                              debugPrint(
-                                  'Dropped todo ${todo.id} onto list ${todoList.id} (from ${todo.listId})');
-                              // 从原列表移除
-                              if (todo.listId != null &&
-                                  todo.listId != todoList.id) {
-                                final oldList = _todoLists
-                                    .firstWhere((l) => l.id == todo.listId);
-                                oldList.items
-                                    .removeWhere((t) => t.id == todo.id);
-                              }
-                              // 添加到新列表
-                              todo.listId = todoList.id;
-                              if (!todoList.items.any((t) => t.id == todo.id)) {
-                                todoList.items.add(todo);
-                              }
-                            });
-                          },
-                          onReorderTodos: (oldIndex, newIndex) {
+                    )
+                  : CustomScrollView(
+                      slivers: [
+                        // 列表区域
+                        SliverReorderableList(
+                          itemCount: _todoLists.length,
+                          onReorder: (oldIndex, newIndex) async {
                             setState(() {
                               if (newIndex > oldIndex) {
                                 newIndex -= 1;
                               }
-                              final moving = todoList.items[oldIndex];
+                              final movingList = _todoLists[oldIndex];
                               debugPrint(
-                                  'Reordering todo ${moving.id} in list ${todoList.id}: $oldIndex -> $newIndex');
-                              final todo = todoList.items.removeAt(oldIndex);
-                              todoList.items.insert(newIndex, todo);
+                                  'Reordering lists ${movingList.id}: $oldIndex -> $newIndex');
+                              final list = _todoLists.removeAt(oldIndex);
+                              _todoLists.insert(newIndex, list);
                             });
+                            await _saveData(); // 保存数据
+                          },
+                          itemBuilder: (context, index) {
+                            final todoList = _todoLists[index];
+                            return Padding(
+                              key: ValueKey(todoList.id),
+                              padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+                              child: TodoListWidget(
+                                index: index,
+                                todoList: todoList,
+                                onToggleExpand: () async {
+                                  setState(() {
+                                    todoList.isExpanded = !todoList.isExpanded;
+                                  });
+                                  await _saveData(); // 保存数据
+                                },
+                                onToggleTodo: (todoId) =>
+                                    _toggleTodo(todoList.id, todoId),
+                                onDeleteTodo: (todoId) =>
+                                    _deleteTodo(todoList.id, todoId),
+                                onEditTodo: (todo) => _editTodo(todo),
+                                onDeleteList: () => _deleteList(todoList.id),
+                                onEditList: () => _editList(todoList),
+                                onAcceptDrop: (todo) async {
+                                  setState(() {
+                                    debugPrint(
+                                        'Dropped todo ${todo.id} onto list ${todoList.id} (from ${todo.listId})');
+                                    // 从原列表移除
+                                    if (todo.listId != null &&
+                                        todo.listId != todoList.id) {
+                                      final oldList = _todoLists.firstWhere(
+                                          (l) => l.id == todo.listId);
+                                      oldList.items
+                                          .removeWhere((t) => t.id == todo.id);
+                                    }
+                                    // 添加到新列表
+                                    todo.listId = todoList.id;
+                                    if (!todoList.items
+                                        .any((t) => t.id == todo.id)) {
+                                      todoList.items.add(todo);
+                                    }
+                                  });
+                                  await _saveData(); // 保存数据
+                                },
+                                onReorderTodos: (oldIndex, newIndex) async {
+                                  setState(() {
+                                    if (newIndex > oldIndex) {
+                                      newIndex -= 1;
+                                    }
+                                    final moving = todoList.items[oldIndex];
+                                    debugPrint(
+                                        'Reordering todo ${moving.id} in list ${todoList.id}: $oldIndex -> $newIndex');
+                                    final todo =
+                                        todoList.items.removeAt(oldIndex);
+                                    todoList.items.insert(newIndex, todo);
+                                  });
+                                  await _saveData(); // 保存数据
+                                },
+                              ),
+                            );
                           },
                         ),
-                      );
-                    },
-                  ),
-                ],
-              ),
-      ),
+                      ],
+                    ),
+            ),
       floatingActionButton: FloatingActionButton(
         onPressed: _showAddOptions,
         child: const Icon(Icons.add),

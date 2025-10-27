@@ -44,6 +44,13 @@ class TodoItemWidget extends StatelessWidget {
   Widget build(BuildContext context) {
     return LongPressDraggable<TodoItem>(
       data: todo,
+      onDragStarted: () {
+        debugPrint('Todo drag started: ${todo.id} (from list ${todo.listId})');
+      },
+      onDragEnd: (details) {
+        debugPrint(
+            'Todo drag ended: ${todo.id}, wasAccepted=${details.wasAccepted}');
+      },
       feedback: Material(
         elevation: 4,
         borderRadius: BorderRadius.circular(12),
@@ -235,6 +242,7 @@ class TodoList {
 // TodoList 列表组件（可折叠的列表）
 class TodoListWidget extends StatelessWidget {
   final TodoList todoList;
+  final int index; // index for list reorder handle
   final VoidCallback onToggleExpand;
   final Function(String todoId) onToggleTodo;
   final Function(String todoId) onDeleteTodo;
@@ -247,6 +255,7 @@ class TodoListWidget extends StatelessWidget {
   const TodoListWidget({
     super.key,
     required this.todoList,
+    required this.index,
     required this.onToggleExpand,
     required this.onToggleTodo,
     required this.onDeleteTodo,
@@ -325,6 +334,15 @@ class TodoListWidget extends StatelessWidget {
                       ),
                       const SizedBox(width: 8),
                       // 更多选项
+                      // 拖拽手柄（长按 0.5s 开始拖动，用于列表重排）
+                      ReorderableDelayedDragStartListener(
+                        index: index,
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 8.0),
+                          child:
+                              Icon(Icons.drag_handle, color: Colors.grey[600]),
+                        ),
+                      ),
                       PopupMenuButton<String>(
                         icon: Icon(Icons.more_vert, color: Colors.grey[600]),
                         onSelected: (value) {
@@ -753,6 +771,9 @@ class _TodoPageState extends State<TodoPage> {
                         if (newIndex > oldIndex) {
                           newIndex -= 1;
                         }
+                        final moving = _standaloneTodos[oldIndex];
+                        debugPrint(
+                            'Reordering standalone todo ${moving.id}: $oldIndex -> $newIndex');
                         final todo = _standaloneTodos.removeAt(oldIndex);
                         _standaloneTodos.insert(newIndex, todo);
                       });
@@ -784,6 +805,9 @@ class _TodoPageState extends State<TodoPage> {
                       if (newIndex > oldIndex) {
                         newIndex -= 1;
                       }
+                      final movingList = _todoLists[oldIndex];
+                      debugPrint(
+                          'Reordering lists ${movingList.id}: $oldIndex -> $newIndex');
                       final list = _todoLists.removeAt(oldIndex);
                       _todoLists.insert(newIndex, list);
                     });
@@ -794,6 +818,7 @@ class _TodoPageState extends State<TodoPage> {
                       key: ValueKey(todoList.id),
                       padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
                       child: TodoListWidget(
+                        index: index,
                         todoList: todoList,
                         onToggleExpand: () {
                           setState(() {
@@ -809,6 +834,8 @@ class _TodoPageState extends State<TodoPage> {
                         onEditList: () => _editList(todoList),
                         onAcceptDrop: (todo) {
                           setState(() {
+                            debugPrint(
+                                'Dropped todo ${todo.id} onto list ${todoList.id} (from ${todo.listId})');
                             // 从原列表或独立列表移除
                             if (todo.listId == null) {
                               _standaloneTodos
@@ -828,6 +855,9 @@ class _TodoPageState extends State<TodoPage> {
                             if (newIndex > oldIndex) {
                               newIndex -= 1;
                             }
+                            final moving = todoList.items[oldIndex];
+                            debugPrint(
+                                'Reordering todo ${moving.id} in list ${todoList.id}: $oldIndex -> $newIndex');
                             final todo = todoList.items.removeAt(oldIndex);
                             todoList.items.insert(newIndex, todo);
                           });

@@ -155,11 +155,6 @@ class _MainPageState extends State<MainPage> {
             activeIcon: Icon(Icons.bar_chart),
             label: 'Stats',
           ),
-          BottomNavigationBarItem(
-            icon: Icon(Icons.spa_outlined),
-            activeIcon: Icon(Icons.spa),
-            label: 'Focus',
-          ),
         ],
       ),
     );

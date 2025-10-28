@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import 'dart:io';
+import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import 'pages/todo/todo.dart';
 import 'pages/time_logger/time_logger.dart';
 import 'pages/target/target.dart';
@@ -13,6 +15,12 @@ void main() async {
 
   // 确保 Flutter 绑定初始化
   WidgetsFlutterBinding.ensureInitialized();
+
+  // 初始化桌面平台的 sqflite
+  if (Platform.isWindows || Platform.isLinux || Platform.isMacOS) {
+    sqfliteFfiInit();
+    databaseFactory = databaseFactoryFfi;
+  }
 
   // 数据迁移: 从 SharedPreferences 迁移到 SQLite
   await TimeLoggerStorage.migrateFromOldStorage();

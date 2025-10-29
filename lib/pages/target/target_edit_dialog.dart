@@ -19,10 +19,11 @@ class _TargetEditDialogState extends State<TargetEditDialog> {
   late int _targetHours;
   late int _targetMinutes;
   late List<String> _selectedTodoIds;
+  late List<String> _selectedListIds;
   late Color _selectedColor;
 
   List<TodoItemData> _allTodos = [];
-  Map<String, String> _todoListNames = {}; // TODO ID -> List Name
+  List<TodoListData> _todoLists = [];
   bool _isLoadingTodos = true;
 
   @override
@@ -39,6 +40,7 @@ class _TargetEditDialogState extends State<TargetEditDialog> {
     _targetMinutes = (targetSeconds % 3600) ~/ 60;
 
     _selectedTodoIds = target?.linkedTodoIds ?? [];
+    _selectedListIds = target?.linkedListIds ?? [];
     _selectedColor = target?.color ?? Colors.blue;
 
     _loadTodos();
@@ -49,17 +51,9 @@ class _TargetEditDialogState extends State<TargetEditDialog> {
     final items = data['items'] as Map<String, TodoItemData>;
     final lists = data['lists'] as List<TodoListData>;
 
-    // 构建 TODO -> List 映射
-    final Map<String, String> listNames = {};
-    for (final list in lists) {
-      for (final itemId in list.itemIds) {
-        listNames[itemId] = list.name;
-      }
-    }
-
     setState(() {
       _allTodos = items.values.toList();
-      _todoListNames = listNames;
+      _todoLists = lists;
       _isLoadingTodos = false;
     });
   }
@@ -92,6 +86,7 @@ class _TargetEditDialogState extends State<TargetEditDialog> {
           period: _selectedPeriod,
           targetSeconds: targetSeconds,
           linkedTodoIds: _selectedTodoIds,
+          linkedListIds: _selectedListIds,
           color: _selectedColor,
         ) ??
         Target(
@@ -101,6 +96,7 @@ class _TargetEditDialogState extends State<TargetEditDialog> {
           period: _selectedPeriod,
           targetSeconds: targetSeconds,
           linkedTodoIds: _selectedTodoIds,
+          linkedListIds: _selectedListIds,
           color: _selectedColor,
         );
 
@@ -119,7 +115,7 @@ class _TargetEditDialogState extends State<TargetEditDialog> {
             Container(
               padding: const EdgeInsets.all(16),
               decoration: BoxDecoration(
-                color: _selectedColor.withOpacity(0.1),
+                color: _selectedColor.withValues(alpha: 0.1),
                 border: Border(
                   bottom: BorderSide(color: Colors.grey.shade300),
                 ),
@@ -166,31 +162,29 @@ class _TargetEditDialogState extends State<TargetEditDialog> {
                     const Text('目标类型',
                         style: TextStyle(fontWeight: FontWeight.bold)),
                     const SizedBox(height: 8),
-                    Row(
-                      children: [
-                        Expanded(
-                          child: RadioListTile<TargetType>(
-                            title: const Text('达成目标'),
-                            subtitle: const Text('越多越好'),
-                            value: TargetType.achievement,
-                            groupValue: _selectedType,
-                            onChanged: (value) {
-                              setState(() => _selectedType = value!);
-                            },
+                    RadioGroup<TargetType>(
+                      groupValue: _selectedType,
+                      onChanged: (value) {
+                        setState(() => _selectedType = value!);
+                      },
+                      child: Row(
+                        children: [
+                          Expanded(
+                            child: RadioListTile<TargetType>(
+                              title: const Text('达成目标'),
+                              subtitle: const Text('越多越好'),
+                              value: TargetType.achievement,
+                            ),
                           ),
-                        ),
-                        Expanded(
-                          child: RadioListTile<TargetType>(
-                            title: const Text('限制目标'),
-                            subtitle: const Text('不要超过'),
-                            value: TargetType.limit,
-                            groupValue: _selectedType,
-                            onChanged: (value) {
-                              setState(() => _selectedType = value!);
-                            },
+                          Expanded(
+                            child: RadioListTile<TargetType>(
+                              title: const Text('限制目标'),
+                              subtitle: const Text('不要超过'),
+                              value: TargetType.limit,
+                            ),
                           ),
-                        ),
-                      ],
+                        ],
+                      ),
                     ),
                     const SizedBox(height: 16),
 
@@ -330,7 +324,7 @@ class _TargetEditDialogState extends State<TargetEditDialog> {
   }
 
   Widget _buildTodoSelector() {
-    if (_allTodos.isEmpty) {
+    if (_todoLists.isEmpty) {
       return const Card(
         child: Padding(
           padding: EdgeInsets.all(16),
@@ -340,42 +334,163 @@ class _TargetEditDialogState extends State<TargetEditDialog> {
     }
 
     return Card(
-      child: Column(
-        children: [
-          CheckboxListTile(
-            title: const Text('选择全部'),
-            value: _selectedTodoIds.length == _allTodos.length,
-            tristate: true,
-            onChanged: (value) {
-              setState(() {
-                if (value == true) {
-                  _selectedTodoIds = _allTodos.map((t) => t.id).toList();
-                } else {
-                  _selectedTodoIds = [];
-                }
-              });
-            },
-          ),
-          const Divider(height: 1),
-          ..._allTodos.map((todo) {
-            final isSelected = _selectedTodoIds.contains(todo.id);
-            final listName = _todoListNames[todo.id];
-            return CheckboxListTile(
-              title: Text(todo.title),
-              subtitle: listName != null ? Text(listName) : null,
-              value: isSelected,
-              onChanged: (value) {
-                setState(() {
-                  if (value == true) {
-                    _selectedTodoIds.add(todo.id);
-                  } else {
-                    _selectedTodoIds.remove(todo.id);
-                  }
-                });
-              },
-            );
-          }).toList(),
-        ],
+      child: ListView.builder(
+        shrinkWrap: true,
+        physics: const NeverScrollableScrollPhysics(),
+        itemCount: _todoLists.length,
+        itemBuilder: (context, index) {
+          final list = _todoLists[index];
+          final listTodos =
+              _allTodos.where((t) => t.listId == list.id).toList();
+          final isListSelected = _selectedListIds.contains(list.id);
+
+          // 计算有多少个单独的 todo 被选中
+          final selectedIndividualCount =
+              listTodos.where((t) => _selectedTodoIds.contains(t.id)).length;
+
+          return Card(
+            margin: const EdgeInsets.symmetric(vertical: 4, horizontal: 8),
+            elevation: 1,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                // 列表头部 - 可以选择整个列表
+                Container(
+                  decoration: BoxDecoration(
+                    color: isListSelected
+                        ? list.color.withValues(alpha: 0.1)
+                        : Colors.grey.shade50,
+                    border: Border(
+                      left: BorderSide(
+                        color: list.color,
+                        width: 4,
+                      ),
+                    ),
+                  ),
+                  child: CheckboxListTile(
+                    title: Row(
+                      children: [
+                        Icon(Icons.folder, color: list.color, size: 20),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            list.name,
+                            style: TextStyle(
+                              fontWeight: FontWeight.w600,
+                              color: isListSelected
+                                  ? list.color
+                                  : Colors.grey.shade800,
+                            ),
+                          ),
+                        ),
+                        if (isListSelected)
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 8,
+                              vertical: 2,
+                            ),
+                            decoration: BoxDecoration(
+                              color: list.color,
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                            child: const Text(
+                              '整个列表',
+                              style: TextStyle(
+                                color: Colors.white,
+                                fontSize: 11,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                          ),
+                        if (!isListSelected && selectedIndividualCount > 0)
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 8,
+                              vertical: 2,
+                            ),
+                            decoration: BoxDecoration(
+                              color: Colors.blue.shade100,
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                            child: Text(
+                              '$selectedIndividualCount/${listTodos.length}',
+                              style: TextStyle(
+                                color: Colors.blue.shade700,
+                                fontSize: 11,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                          ),
+                      ],
+                    ),
+                    subtitle: Text(
+                      '${listTodos.length} 个待办事项',
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: Colors.grey.shade600,
+                      ),
+                    ),
+                    value: isListSelected,
+                    activeColor: list.color,
+                    onChanged: (value) {
+                      setState(() {
+                        if (value == true) {
+                          // 选择整个列表
+                          _selectedListIds.add(list.id);
+                          // 移除该列表中的单独选择的 todo
+                          _selectedTodoIds.removeWhere(
+                            (todoId) => listTodos.any((t) => t.id == todoId),
+                          );
+                        } else {
+                          // 取消选择列表
+                          _selectedListIds.remove(list.id);
+                        }
+                      });
+                    },
+                  ),
+                ),
+
+                // 如果列表未被整体选中，显示单个 todo 选项
+                if (!isListSelected && listTodos.isNotEmpty)
+                  Padding(
+                    padding: const EdgeInsets.only(left: 32, bottom: 8),
+                    child: Column(
+                      children: listTodos.map((todo) {
+                        final isSelected = _selectedTodoIds.contains(todo.id);
+                        return CheckboxListTile(
+                          dense: true,
+                          title: Text(
+                            todo.title,
+                            style: const TextStyle(fontSize: 14),
+                          ),
+                          subtitle: todo.description != null &&
+                                  todo.description!.isNotEmpty
+                              ? Text(
+                                  todo.description!,
+                                  style: const TextStyle(fontSize: 12),
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                )
+                              : null,
+                          value: isSelected,
+                          activeColor: list.color,
+                          onChanged: (value) {
+                            setState(() {
+                              if (value == true) {
+                                _selectedTodoIds.add(todo.id);
+                              } else {
+                                _selectedTodoIds.remove(todo.id);
+                              }
+                            });
+                          },
+                        );
+                      }).toList(),
+                    ),
+                  ),
+              ],
+            ),
+          );
+        },
       ),
     );
   }

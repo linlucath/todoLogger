@@ -89,7 +89,7 @@ class _TodoSelectorDialogState extends State<TodoSelectorDialog> {
             Container(
               padding: const EdgeInsets.all(20),
               decoration: BoxDecoration(
-                color: Theme.of(context).primaryColor.withOpacity(0.1),
+                color: Theme.of(context).primaryColor.withValues(alpha: 0.1),
                 borderRadius: const BorderRadius.only(
                   topLeft: Radius.circular(16),
                   topRight: Radius.circular(16),
@@ -247,7 +247,7 @@ class _TodoSelectorDialogState extends State<TodoSelectorDialog> {
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
         decoration: BoxDecoration(
-          color: isSelected ? listColor.withOpacity(0.1) : null,
+          color: isSelected ? listColor.withValues(alpha: 0.1) : null,
           border: Border(
             left: BorderSide(
               color: isSelected ? listColor : Colors.transparent,

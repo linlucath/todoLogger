@@ -499,7 +499,7 @@ class _StatisticsPageState extends State<StatisticsPage> {
             width: 40,
             height: 40,
             decoration: BoxDecoration(
-              color: color.withOpacity(0.2),
+              color: color.withValues(alpha: 0.2),
               borderRadius: BorderRadius.circular(8),
             ),
             child: Icon(
@@ -515,7 +515,7 @@ class _StatisticsPageState extends State<StatisticsPage> {
           ),
           subtitle: LinearProgressIndicator(
             value: percentage / 100,
-            backgroundColor: color.withOpacity(0.2),
+            backgroundColor: color.withValues(alpha: 0.2),
             valueColor: AlwaysStoppedAnimation<Color>(color),
           ),
           trailing: Column(

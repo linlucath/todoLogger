@@ -45,7 +45,8 @@ class TodoItemWidget extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MediaQuery(
-      data: MediaQuery.of(context).copyWith(textScaleFactor: 1.0),
+      data: MediaQuery.of(context)
+          .copyWith(textScaler: const TextScaler.linear(1.0)),
       child: LongPressDraggable<TodoItem>(
         data: todo,
         delay: const Duration(milliseconds: 300),
@@ -159,7 +160,7 @@ class TodoItemWidget extends StatelessWidget {
               border: Border.all(color: Colors.grey[200]!),
               boxShadow: [
                 BoxShadow(
-                  color: Colors.black.withOpacity(0.03),
+                  color: Colors.black.withValues(alpha: 0.03),
                   blurRadius: 6,
                   offset: const Offset(0, 2),
                 ),
@@ -586,7 +587,7 @@ class _TodoPageState extends State<TodoPage> {
               id: list.id,
               name: list.name,
               isExpanded: list.isExpanded,
-              colorValue: list.color.value,
+              colorValue: list.color.toARGB32(),
               itemIds: list.items.map((item) => item.id).toList(),
             ))
         .toList();
@@ -745,7 +746,9 @@ class _TodoPageState extends State<TodoPage> {
                 _todoLists.removeWhere((l) => l.id == listId);
               });
               await _saveData(); // 保存数据
-              Navigator.pop(context);
+              if (context.mounted) {
+                Navigator.pop(context);
+              }
             },
             child: const Text('删除', style: TextStyle(color: Colors.red)),
           ),
@@ -791,8 +794,8 @@ class _TodoPageState extends State<TodoPage> {
             ),
             boxShadow: [
               BoxShadow(
-                color:
-                    const Color.fromARGB(255, 234, 166, 243).withOpacity(0.3),
+                color: const Color.fromARGB(255, 234, 166, 243)
+                    .withValues(alpha: 0.3),
                 blurRadius: 8,
                 offset: const Offset(0, 2),
               ),
@@ -805,7 +808,7 @@ class _TodoPageState extends State<TodoPage> {
                 Container(
                   padding: const EdgeInsets.all(8),
                   decoration: BoxDecoration(
-                    color: Colors.white.withOpacity(0.2),
+                    color: Colors.white.withValues(alpha: 0.2),
                     borderRadius: BorderRadius.circular(10),
                   ),
                   child: const Icon(
@@ -945,6 +948,7 @@ class _TodoPageState extends State<TodoPage> {
                     ),
             ),
       floatingActionButton: FloatingActionButton(
+        heroTag: 'todoFAB',
         onPressed: _showAddOptions,
         child: const Icon(Icons.add),
       ),

@@ -136,9 +136,7 @@ class _TimeLoggerPageState extends State<TimeLoggerPage> {
       _isRecording = true;
 
       // 如果是第一次开始记录，设置连续记录开始时间
-      if (_continuousStartTime == null) {
-        _continuousStartTime = now;
-      }
+      _continuousStartTime ??= now;
 
       _activityHistory.add(activityName);
     });
@@ -326,7 +324,7 @@ class _TimeLoggerPageState extends State<TimeLoggerPage> {
             gradient: LinearGradient(
               colors: [
                 Theme.of(context).primaryColor,
-                Theme.of(context).primaryColor.withOpacity(0.8),
+                Theme.of(context).primaryColor.withValues(alpha: 0.8),
               ],
             ),
           ),
@@ -387,7 +385,8 @@ class _TimeLoggerPageState extends State<TimeLoggerPage> {
                       vertical: 12,
                     ),
                     decoration: BoxDecoration(
-                      color: Theme.of(context).primaryColor.withOpacity(0.1),
+                      color:
+                          Theme.of(context).primaryColor.withValues(alpha: 0.1),
                       borderRadius: BorderRadius.circular(30),
                     ),
                     child: Row(
@@ -433,10 +432,10 @@ class _TimeLoggerPageState extends State<TimeLoggerPage> {
                         vertical: 8,
                       ),
                       decoration: BoxDecoration(
-                        color: Colors.amber.withOpacity(0.1),
+                        color: Colors.amber.withValues(alpha: 0.1),
                         borderRadius: BorderRadius.circular(20),
                         border: Border.all(
-                          color: Colors.amber.withOpacity(0.3),
+                          color: Colors.amber.withValues(alpha: 0.3),
                         ),
                       ),
                       child: Row(

@@ -1,6 +1,7 @@
 import 'package:intl/intl.dart';
 import 'models.dart';
 import '../../services/time_logger_storage.dart';
+import '../../services/todo_storage.dart';
 
 class TargetCalculator {
   /// 计算目标的当前周期
@@ -53,9 +54,27 @@ class TargetCalculator {
     final allRecords = await TimeLoggerStorage.getAllRecords();
     print('📂 [TargetCalculator] 加载了 ${allRecords.length} 条活动记录');
 
-    // 如果目标没有关联任何 TODO，返回空进度
-    if (target.linkedTodoIds.isEmpty) {
-      print('⚠️ [TargetCalculator] 目标未关联任何 TODO');
+    // 构建需要匹配的 TODO ID 集合
+    Set<String> targetTodoIds = Set.from(target.linkedTodoIds);
+
+    // 如果有关联的列表，需要获取列表中的所有 TODO
+    if (target.linkedListIds.isNotEmpty) {
+      final todoData = await TodoStorage.getAllData();
+      final lists = todoData['lists'] as List<TodoListData>;
+
+      for (final listId in target.linkedListIds) {
+        final list = lists.where((l) => l.id == listId).firstOrNull;
+        if (list != null) {
+          targetTodoIds.addAll(list.itemIds);
+          print(
+              '📁 [TargetCalculator] 添加列表 "${list.name}" 中的 ${list.itemIds.length} 个 TODO');
+        }
+      }
+    }
+
+    // 如果目标没有关联任何 TODO 或列表，返回空进度
+    if (targetTodoIds.isEmpty) {
+      print('⚠️ [TargetCalculator] 目标未关联任何 TODO 或列表');
       return TargetProgress(
         target: target,
         currentSeconds: 0,
@@ -63,6 +82,8 @@ class TargetCalculator {
         periodEnd: period.end,
       );
     }
+
+    print('🎯 [TargetCalculator] 总共需要匹配 ${targetTodoIds.length} 个 TODO');
 
     // 筛选符合条件的记录：
     // 1. 记录的结束时间在当前周期内
@@ -82,7 +103,7 @@ class TargetCalculator {
 
       // 检查记录是否关联了目标中的 TODO
       if (record.linkedTodoId != null &&
-          target.linkedTodoIds.contains(record.linkedTodoId)) {
+          targetTodoIds.contains(record.linkedTodoId)) {
         // 计算记录的时长（秒）
         final duration = record.endTime!.difference(record.startTime).inSeconds;
         totalSeconds += duration;

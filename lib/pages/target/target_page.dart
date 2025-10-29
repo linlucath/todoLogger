@@ -145,6 +145,7 @@ class _TargetPageState extends State<TargetPage> {
               ? _buildEmptyState()
               : _buildTargetList(),
       floatingActionButton: FloatingActionButton(
+        heroTag: 'targetFAB',
         onPressed: _addTarget,
         tooltip: '添加目标',
         child: const Icon(Icons.add),
@@ -282,7 +283,7 @@ class _TargetPageState extends State<TargetPage> {
                   Switch(
                     value: target.isActive,
                     onChanged: (_) => _toggleTargetActive(target),
-                    activeColor: target.color,
+                    activeTrackColor: target.color,
                   ),
                 ],
               ),
@@ -311,20 +312,45 @@ class _TargetPageState extends State<TargetPage> {
                 ],
               ),
 
-              // 关联的 TODO 数量
-              if (target.linkedTodoIds.isNotEmpty) ...[
+              // 关联的 TODO 信息
+              if (target.linkedTodoIds.isNotEmpty ||
+                  target.linkedListIds.isNotEmpty) ...[
                 const SizedBox(height: 8),
-                Row(
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 4,
                   children: [
-                    Icon(Icons.link, size: 16, color: Colors.grey[600]),
-                    const SizedBox(width: 4),
-                    Text(
-                      '关联 ${target.linkedTodoIds.length} 个 TODO',
-                      style: TextStyle(
-                        fontSize: 12,
-                        color: Colors.grey[600],
+                    if (target.linkedListIds.isNotEmpty)
+                      Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(Icons.folder, size: 16, color: Colors.blue[600]),
+                          const SizedBox(width: 4),
+                          Text(
+                            '${target.linkedListIds.length} 个列表',
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: Colors.blue[600],
+                              fontWeight: FontWeight.w500,
+                            ),
+                          ),
+                        ],
                       ),
-                    ),
+                    if (target.linkedTodoIds.isNotEmpty)
+                      Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(Icons.link, size: 16, color: Colors.grey[600]),
+                          const SizedBox(width: 4),
+                          Text(
+                            '${target.linkedTodoIds.length} 个待办',
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: Colors.grey[600],
+                            ),
+                          ),
+                        ],
+                      ),
                   ],
                 ),
               ],

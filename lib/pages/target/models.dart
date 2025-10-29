@@ -21,7 +21,8 @@ class Target {
   TargetType type; // 目标类型
   TimePeriod period; // 时间周期
   int targetSeconds; // 目标时长（秒）
-  List<String> linkedTodoIds; // 关联的 TODO IDs
+  List<String> linkedTodoIds; // 关联的单个 TODO IDs
+  List<String> linkedListIds; // 关联的整个 TODO List IDs
   DateTime createdAt; // 创建时间
   bool isActive; // 是否启用
   Color color; // 主题颜色
@@ -33,10 +34,12 @@ class Target {
     required this.period,
     required this.targetSeconds,
     List<String>? linkedTodoIds,
+    List<String>? linkedListIds,
     DateTime? createdAt,
     this.isActive = true,
     this.color = Colors.blue,
   })  : linkedTodoIds = linkedTodoIds ?? [],
+        linkedListIds = linkedListIds ?? [],
         createdAt = createdAt ?? DateTime.now();
 
   /// 获取时间周期的显示文本
@@ -79,7 +82,7 @@ class Target {
     final minutes = (targetSeconds % 3600) ~/ 60;
 
     if (hours > 0 && minutes > 0) {
-      return '$hours小时${minutes}分钟';
+      return '$hours小时$minutes分钟';
     } else if (hours > 0) {
       return '$hours小时';
     } else {
@@ -97,9 +100,11 @@ class Target {
       targetSeconds: json['targetSeconds'] as int,
       linkedTodoIds:
           (json['linkedTodoIds'] as List<dynamic>?)?.cast<String>() ?? [],
+      linkedListIds:
+          (json['linkedListIds'] as List<dynamic>?)?.cast<String>() ?? [],
       createdAt: DateTime.parse(json['createdAt'] as String),
       isActive: json['isActive'] as bool? ?? true,
-      color: Color(json['color'] as int? ?? Colors.blue.value),
+      color: Color(json['color'] as int? ?? Colors.blue.toARGB32()),
     );
   }
 
@@ -112,9 +117,10 @@ class Target {
       'period': period.index,
       'targetSeconds': targetSeconds,
       'linkedTodoIds': linkedTodoIds,
+      'linkedListIds': linkedListIds,
       'createdAt': createdAt.toIso8601String(),
       'isActive': isActive,
-      'color': color.value,
+      'color': color.toARGB32(),
     };
   }
 
@@ -126,6 +132,7 @@ class Target {
     TimePeriod? period,
     int? targetSeconds,
     List<String>? linkedTodoIds,
+    List<String>? linkedListIds,
     DateTime? createdAt,
     bool? isActive,
     Color? color,
@@ -137,6 +144,7 @@ class Target {
       period: period ?? this.period,
       targetSeconds: targetSeconds ?? this.targetSeconds,
       linkedTodoIds: linkedTodoIds ?? List.from(this.linkedTodoIds),
+      linkedListIds: linkedListIds ?? List.from(this.linkedListIds),
       createdAt: createdAt ?? this.createdAt,
       isActive: isActive ?? this.isActive,
       color: color ?? this.color,

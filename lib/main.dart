@@ -5,8 +5,13 @@ import 'pages/todo/todo.dart';
 import 'pages/time_logger/time_logger.dart';
 import 'pages/target/target.dart';
 import 'pages/statistics/statistics.dart';
+import 'pages/sync/sync_settings.dart';
 import 'utils/performance_monitor.dart';
 import 'services/time_logger_storage.dart';
+import 'services/sync_service.dart';
+
+// 全局同步服务实例
+late final SyncService syncService;
 
 void main() async {
   // 性能监控: 记录启动时间
@@ -24,6 +29,10 @@ void main() async {
 
   // 数据迁移: 从 SharedPreferences 迁移到 SQLite
   await TimeLoggerStorage.migrateFromOldStorage();
+
+  // 初始化同步服务
+  syncService = SyncService();
+  await syncService.initialize();
 
   runApp(const MyApp());
 
@@ -115,6 +124,9 @@ class _MainPageState extends State<MainPage> {
       case 3:
         page = const StatisticsPage();
         break;
+      case 4:
+        page = SyncSettingsPage(syncService: syncService);
+        break;
       default:
         page = const TodoPage();
     }
@@ -162,6 +174,11 @@ class _MainPageState extends State<MainPage> {
             icon: Icon(Icons.bar_chart_outlined),
             activeIcon: Icon(Icons.bar_chart),
             label: 'Stats',
+          ),
+          BottomNavigationBarItem(
+            icon: Icon(Icons.sync_outlined),
+            activeIcon: Icon(Icons.sync),
+            label: 'Sync',
           ),
         ],
       ),

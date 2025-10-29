@@ -20,6 +20,13 @@ dependencies:
   sqflite: ^2.3.0
   sqflite_common_ffi: ^2.3.0
   path: ^1.8.3
+  # 局域网同步功能
+  shelf: ^1.4.1
+  shelf_web_socket: ^1.0.4
+  web_socket_channel: ^2.4.0
+  multicast_dns: ^0.3.2
+  uuid: ^4.0.0
+  network_info_plus: ^5.0.0
 
 dev_dependencies:
   flutter_test:

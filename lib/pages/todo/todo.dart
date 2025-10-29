@@ -412,6 +412,7 @@ class TodoListWidget extends StatelessWidget {
                   ReorderableListView.builder(
                     shrinkWrap: true,
                     physics: const NeverScrollableScrollPhysics(),
+                    buildDefaultDragHandles: false, // 禁用默认拖拽手柄，使用自定义手柄
                     itemCount: todoList.items.length,
                     onReorder: onReorderTodos,
                     itemBuilder: (context, index) {

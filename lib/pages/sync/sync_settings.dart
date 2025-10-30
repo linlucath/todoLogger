@@ -412,6 +412,12 @@ class _SyncSettingsPageState extends State<SyncSettingsPage> {
 
   /// 连接到设备
   Future<void> _connectToDevice(DeviceInfo device) async {
+    print('🎯 [UI] 准备连接设备: ${device.deviceName}');
+    print(
+        '🎯 [UI] 设备IP: "${device.ipAddress}" (长度: ${device.ipAddress.length})');
+    print('🎯 [UI] 设备端口: ${device.port}');
+    print('🎯 [UI] 完整对象: ${device.toJson()}');
+
     showDialog(
       context: context,
       barrierDismissible: false,
@@ -479,7 +485,9 @@ class _SyncSettingsPageState extends State<SyncSettingsPage> {
           children: [
             CircularProgressIndicator(),
             SizedBox(width: 16),
-            Text('正在同步...'),
+            Expanded(
+              child: Text('正在连接并同步数据...'),
+            ),
           ],
         ),
       ),

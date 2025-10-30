@@ -45,5 +45,11 @@
 	<true/>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>需要访问本地网络以发现和同步其他设备</string>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_udp.local.</string>
+	</array>
 </dict>
 </plist>

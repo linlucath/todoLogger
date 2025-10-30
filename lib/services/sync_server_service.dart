@@ -36,27 +36,48 @@ class SyncServerService {
     _currentDevice = currentDevice;
     _port = port;
 
-    try {
-      // 创建路由处理器
-      final handler = Cascade()
-          .add(_createWebSocketHandler())
-          .add(_createHttpHandler())
-          .handler;
+    // 尝试多个端口（如果原端口被占用）
+    final portsToTry = [_port, _port + 1, _port + 2, _port + 3, _port + 4];
 
-      // 启动服务器
-      _server = await shelf_io.serve(
-        handler,
-        InternetAddress.anyIPv4,
-        _port,
-      );
+    for (final tryPort in portsToTry) {
+      try {
+        // 创建路由处理器
+        final handler = Cascade()
+            .add(_createWebSocketHandler())
+            .add(_createHttpHandler())
+            .handler;
 
-      print(
-          '✅ [SyncServer] 服务器启动成功: ${_server!.address.host}:${_server!.port}');
-      return true;
-    } catch (e) {
-      print('❌ [SyncServer] 启动失败: $e');
-      return false;
+        // 启动服务器
+        _server = await shelf_io.serve(
+          handler,
+          InternetAddress.anyIPv4,
+          tryPort,
+        );
+
+        _port = tryPort; // 更新实际使用的端口
+        print(
+            '✅ [SyncServer] 服务器启动成功: ${_server!.address.host}:${_server!.port}');
+
+        // 如果使用了备用端口，给出提示
+        if (tryPort != port) {
+          print('ℹ️  [SyncServer] 原端口 $port 被占用，使用备用端口 $tryPort');
+        }
+
+        return true;
+      } catch (e) {
+        if (tryPort == portsToTry.last) {
+          // 所有端口都失败了
+          print('❌ [SyncServer] 启动失败: $e');
+          print('❌ [SyncServer] 已尝试端口: ${portsToTry.join(", ")}');
+          return false;
+        } else {
+          // 尝试下一个端口
+          print('⚠️  [SyncServer] 端口 $tryPort 不可用，尝试下一个端口...');
+        }
+      }
     }
+
+    return false;
   }
 
   /// 停止服务器

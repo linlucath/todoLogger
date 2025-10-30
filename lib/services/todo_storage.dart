@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import '../models/sync_data_models.dart';
 
 // TodoItem 数据类（用于序列化）
 class TodoItemData {
@@ -79,6 +80,7 @@ class TodoStorage {
   static const String _keyTodoLists = 'todo_lists';
   static const String _keyIndependentTodos =
       'independent_todos'; // 不属于任何列表的 TODO
+  static const String _keySyncMetadata = 'todo_sync_metadata'; // 同步元数据
 
   // 保存所有 TodoItems（按 ID 存储）
   static Future<void> saveTodoItems(Map<String, TodoItemData> items) async {
@@ -174,5 +176,56 @@ class TodoStorage {
       'lists': results[1] as List<TodoListData>,
       'independentTodoIds': results[2] as List<String>,
     };
+  }
+
+  // === 同步元数据方法 ===
+
+  /// 保存同步元数据（按项目ID存储）
+  static Future<void> saveSyncMetadata(
+      Map<String, SyncMetadata> metadata) async {
+    final prefs = await SharedPreferences.getInstance();
+    final jsonMap = metadata.map((key, value) => MapEntry(key, value.toJson()));
+    await prefs.setString(_keySyncMetadata, jsonEncode(jsonMap));
+    debugPrint(
+        '💾 TodoStorage: Saved sync metadata for ${metadata.length} items');
+  }
+
+  /// 获取所有同步元数据
+  static Future<Map<String, SyncMetadata>> getSyncMetadata() async {
+    final prefs = await SharedPreferences.getInstance();
+    final jsonStr = prefs.getString(_keySyncMetadata);
+    if (jsonStr == null) {
+      debugPrint('📂 TodoStorage: No sync metadata found');
+      return {};
+    }
+
+    final Map<String, dynamic> jsonMap = jsonDecode(jsonStr);
+    final metadata = jsonMap.map(
+      (key, value) => MapEntry(key, SyncMetadata.fromJson(value)),
+    );
+    debugPrint(
+        '📂 TodoStorage: Loaded sync metadata for ${metadata.length} items');
+    return metadata;
+  }
+
+  /// 获取单个项目的同步元数据
+  static Future<SyncMetadata?> getItemSyncMetadata(String itemId) async {
+    final allMetadata = await getSyncMetadata();
+    return allMetadata[itemId];
+  }
+
+  /// 保存单个项目的同步元数据
+  static Future<void> saveItemSyncMetadata(
+      String itemId, SyncMetadata metadata) async {
+    final allMetadata = await getSyncMetadata();
+    allMetadata[itemId] = metadata;
+    await saveSyncMetadata(allMetadata);
+  }
+
+  /// 删除项目的同步元数据
+  static Future<void> deleteItemSyncMetadata(String itemId) async {
+    final allMetadata = await getSyncMetadata();
+    allMetadata.remove(itemId);
+    await saveSyncMetadata(allMetadata);
   }
 }

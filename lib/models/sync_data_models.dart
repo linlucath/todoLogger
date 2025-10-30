@@ -255,3 +255,89 @@ class SyncableTimeLog {
     );
   }
 }
+
+/// 带同步元数据的目标
+class SyncableTarget {
+  final String id;
+  final String name;
+  final int type; // TargetType enum index
+  final int period; // TimePeriod enum index
+  final int targetSeconds;
+  final List<String> linkedTodoIds;
+  final List<String> linkedListIds;
+  final DateTime createdAt;
+  final bool isActive;
+  final int colorValue;
+  final SyncMetadata syncMetadata;
+
+  SyncableTarget({
+    required this.id,
+    required this.name,
+    required this.type,
+    required this.period,
+    required this.targetSeconds,
+    required this.linkedTodoIds,
+    required this.linkedListIds,
+    required this.createdAt,
+    required this.isActive,
+    required this.colorValue,
+    required this.syncMetadata,
+  });
+
+  Map<String, dynamic> toJson() => {
+        'id': id,
+        'name': name,
+        'type': type,
+        'period': period,
+        'targetSeconds': targetSeconds,
+        'linkedTodoIds': linkedTodoIds,
+        'linkedListIds': linkedListIds,
+        'createdAt': createdAt.toIso8601String(),
+        'isActive': isActive,
+        'colorValue': colorValue,
+        'syncMetadata': syncMetadata.toJson(),
+      };
+
+  factory SyncableTarget.fromJson(Map<String, dynamic> json) => SyncableTarget(
+        id: json['id'] as String,
+        name: json['name'] as String,
+        type: json['type'] as int,
+        period: json['period'] as int,
+        targetSeconds: json['targetSeconds'] as int,
+        linkedTodoIds: (json['linkedTodoIds'] as List<dynamic>).cast<String>(),
+        linkedListIds: (json['linkedListIds'] as List<dynamic>).cast<String>(),
+        createdAt: DateTime.parse(json['createdAt'] as String),
+        isActive: json['isActive'] as bool,
+        colorValue: json['colorValue'] as int,
+        syncMetadata:
+            SyncMetadata.fromJson(json['syncMetadata'] as Map<String, dynamic>),
+      );
+
+  SyncableTarget copyWith({
+    String? id,
+    String? name,
+    int? type,
+    int? period,
+    int? targetSeconds,
+    List<String>? linkedTodoIds,
+    List<String>? linkedListIds,
+    DateTime? createdAt,
+    bool? isActive,
+    int? colorValue,
+    SyncMetadata? syncMetadata,
+  }) {
+    return SyncableTarget(
+      id: id ?? this.id,
+      name: name ?? this.name,
+      type: type ?? this.type,
+      period: period ?? this.period,
+      targetSeconds: targetSeconds ?? this.targetSeconds,
+      linkedTodoIds: linkedTodoIds ?? this.linkedTodoIds,
+      linkedListIds: linkedListIds ?? this.linkedListIds,
+      createdAt: createdAt ?? this.createdAt,
+      isActive: isActive ?? this.isActive,
+      colorValue: colorValue ?? this.colorValue,
+      syncMetadata: syncMetadata ?? this.syncMetadata,
+    );
+  }
+}

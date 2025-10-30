@@ -40,21 +40,27 @@ class SyncClientService {
   /// 执行连接
   Future<bool> _doConnect() async {
     if (_remoteDevice == null || _currentDevice == null) {
+      print('❌ [SyncClient] 设备信息不完整');
       return false;
     }
 
     try {
       final wsUrl =
           'ws://${_remoteDevice!.ipAddress}:${_remoteDevice!.port}/ws';
-      print('🔗 [SyncClient] 连接到: $wsUrl');
+      print('🔗 [SyncClient] 尝试连接: $wsUrl');
+      print('🔍 [SyncClient] 目标设备: ${_remoteDevice!.deviceName}');
+      print('🔍 [SyncClient] 目标IP: ${_remoteDevice!.ipAddress}');
+      print('🔍 [SyncClient] 目标端口: ${_remoteDevice!.port}');
 
+      print('⏳ [SyncClient] 创建WebSocket连接...');
       _channel = WebSocketChannel.connect(Uri.parse(wsUrl));
 
       // 等待连接建立
+      print('⏳ [SyncClient] 等待连接就绪...');
       await _channel!.ready;
 
       _isConnected = true;
-      print('✅ [SyncClient] 连接成功');
+      print('✅ [SyncClient] WebSocket连接就绪');
 
       // 发送握手
       _sendHandshake();
@@ -67,10 +73,15 @@ class SyncClientService {
 
       // 通知连接成功
       onConnected?.call();
+      print('🎉 [SyncClient] 连接成功: ${_remoteDevice!.deviceName}');
 
       return true;
-    } catch (e) {
+    } catch (e, stack) {
       print('❌ [SyncClient] 连接失败: $e');
+      print('❌ [SyncClient] 错误类型: ${e.runtimeType}');
+      print('❌ [SyncClient] 堆栈: $stack');
+      print(
+          '🔍 [SyncClient] 目标信息: ${_remoteDevice!.ipAddress}:${_remoteDevice!.port}');
       _isConnected = false;
 
       // 尝试重连

@@ -323,3 +323,20 @@ enum SyncDataType {
   statistics, // 统计数据
   all, // 所有数据
 }
+
+/// 数据同步更新事件
+class SyncDataUpdatedEvent {
+  final String dataType; // 数据类型：todos, timeLogs, targets
+  final String fromDeviceId; // 来源设备ID
+  final String fromDeviceName; // 来源设备名称
+  final int itemCount; // 更新的项目数量
+  final DateTime timestamp; // 时间戳
+
+  SyncDataUpdatedEvent({
+    required this.dataType,
+    required this.fromDeviceId,
+    required this.fromDeviceName,
+    required this.itemCount,
+    DateTime? timestamp,
+  }) : timestamp = timestamp ?? DateTime.now();
+}

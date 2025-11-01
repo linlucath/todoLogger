@@ -1,10 +1,13 @@
 import 'package:flutter/material.dart';
 import 'dart:async';
+import 'dart:io';
 import 'package:intl/intl.dart';
 import '../../services/time_logger_storage.dart';
+import '../../services/notification_service.dart';
 import 'activity_history_page.dart';
 import './next_activity_dialog.dart';
 import './start_record_dialog.dart';
+import './notification_settings_dialog.dart'; // 🆕 导入通知设置对话框
 
 // 记录数据类
 class ActivityRecord {
@@ -39,6 +42,8 @@ class TimeLoggerPage extends StatefulWidget {
 class _TimeLoggerPageState extends State<TimeLoggerPage> {
   Timer? _timer;
   bool _isRecording = false;
+  // ignore: unused_field
+  bool _isInBackground = false; // 标记应用是否在后台，预留用于未来功能
 
   // 当前活动
   ActivityRecord? _currentActivity;
@@ -119,7 +124,39 @@ class _TimeLoggerPageState extends State<TimeLoggerPage> {
   @override
   void dispose() {
     _timer?.cancel();
+    // 清理通知
+    if (Platform.isAndroid || Platform.isIOS) {
+      NotificationService().stopBackgroundNotifications();
+    }
     super.dispose();
+  }
+
+  // 应用进入后台时调用
+  void onAppPaused() {
+    if (!mounted) return;
+
+    // 只在移动端且正在计时时启动后台通知
+    if ((Platform.isAndroid || Platform.isIOS) &&
+        _isRecording &&
+        _currentActivity != null) {
+      _isInBackground = true;
+      NotificationService().startBackgroundNotifications(
+        _currentActivity!.name,
+        startTime: _currentActivity!.startTime, // 🆕 传递开始时间
+      );
+    }
+  }
+
+  // 应用回到前台时调用
+  void onAppResumed() {
+    if (!mounted) return;
+
+    // 停止后台通知并取消所有通知
+    if (Platform.isAndroid || Platform.isIOS) {
+      _isInBackground = false;
+      NotificationService().stopBackgroundNotifications();
+      NotificationService().cancelAllNotifications();
+    }
   }
 
   void _startRecording(String activityName,
@@ -245,8 +282,21 @@ class _TimeLoggerPageState extends State<TimeLoggerPage> {
       appBar: AppBar(
         title: const Text('Time Logger'),
         actions: [
+          // 🆕 通知设置按钮（仅移动端显示）
+          if (Platform.isAndroid || Platform.isIOS)
+            IconButton(
+              icon: const Icon(Icons.notifications_outlined),
+              tooltip: '通知设置',
+              onPressed: () {
+                showDialog(
+                  context: context,
+                  builder: (context) => const NotificationSettingsDialog(),
+                );
+              },
+            ),
           IconButton(
             icon: const Icon(Icons.history),
+            tooltip: '历史记录',
             onPressed: () {
               Navigator.of(context).push(
                 MaterialPageRoute(

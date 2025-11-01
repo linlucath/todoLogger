@@ -14,6 +14,12 @@ class SyncClientService {
   bool _isConnected = false;
   bool _shouldReconnect = false;
 
+  // 重连配置 - 指数退避策略
+  int _reconnectAttempts = 0;
+  static const int _maxReconnectAttempts = 10;
+  static const Duration _minReconnectDelay = Duration(seconds: 1);
+  static const Duration _maxReconnectDelay = Duration(seconds: 60);
+
   // 消息处理回调
   Function(SyncMessage message)? onMessageReceived;
   Function()? onConnected;
@@ -21,6 +27,7 @@ class SyncClientService {
 
   bool get isConnected => _isConnected;
   DeviceInfo? get remoteDevice => _remoteDevice;
+  int get reconnectAttempts => _reconnectAttempts;
 
   /// 连接到远程设备
   Future<bool> connect(
@@ -47,7 +54,7 @@ class SyncClientService {
     try {
       final wsUrl =
           'ws://${_remoteDevice!.ipAddress}:${_remoteDevice!.port}/ws';
-      print('🔗 [SyncClient] 尝试连接: $wsUrl');
+      print('🔗 [SyncClient] 尝试连接: $wsUrl (尝试 ${_reconnectAttempts + 1})');
       print('🔍 [SyncClient] 目标设备: ${_remoteDevice!.deviceName}');
       print('🔍 [SyncClient] 目标IP: ${_remoteDevice!.ipAddress}');
       print('🔍 [SyncClient] 目标端口: ${_remoteDevice!.port}');
@@ -60,6 +67,7 @@ class SyncClientService {
       await _channel!.ready;
 
       _isConnected = true;
+      _reconnectAttempts = 0; // 重置重连计数
       print('✅ [SyncClient] WebSocket连接就绪');
 
       // 发送握手
@@ -183,13 +191,28 @@ class SyncClientService {
     });
   }
 
-  /// 计划重连
+  /// 计划重连（指数退避策略）
   void _scheduleReconnect() {
     _reconnectTimer?.cancel();
 
-    print('⏱️  [SyncClient] 5秒后尝试重连...');
+    // 检查是否超过最大重连次数
+    if (_reconnectAttempts >= _maxReconnectAttempts) {
+      print('❌ [SyncClient] 已达到最大重连次数 ($_maxReconnectAttempts)，停止重连');
+      _shouldReconnect = false;
+      return;
+    }
 
-    _reconnectTimer = Timer(const Duration(seconds: 5), () {
+    // 计算指数退避延迟: min(minDelay * 2^attempts, maxDelay)
+    final delaySeconds =
+        (_minReconnectDelay.inSeconds * (1 << _reconnectAttempts))
+            .clamp(_minReconnectDelay.inSeconds, _maxReconnectDelay.inSeconds);
+    final delay = Duration(seconds: delaySeconds);
+
+    _reconnectAttempts++;
+    print(
+        '⏱️  [SyncClient] ${delay.inSeconds}秒后尝试重连... (尝试 $_reconnectAttempts/$_maxReconnectAttempts)');
+
+    _reconnectTimer = Timer(delay, () {
       if (_shouldReconnect && !_isConnected) {
         print('🔄 [SyncClient] 尝试重连...');
         _doConnect();

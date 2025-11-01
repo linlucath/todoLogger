@@ -47,10 +47,19 @@ class DatabaseService {
       )
     ''');
 
-    // 创建时间记录表的索引
+    // 🆕 优化后的索引 - 添加更多查询优化
     await db.execute(
         'CREATE INDEX idx_start_time ON activity_records (start_time)');
     await db.execute('CREATE INDEX idx_name ON activity_records (name)');
+    // 🆕 新增：用于日期范围查询的复合索引
+    await db.execute(
+        'CREATE INDEX idx_start_end_time ON activity_records (start_time, end_time)');
+    // 🆕 新增：用于todo关联查询的索引
+    await db.execute(
+        'CREATE INDEX idx_linked_todo ON activity_records (linked_todo_id)');
+    // 🆕 新增：用于统计查询的复合索引
+    await db.execute(
+        'CREATE INDEX idx_name_start ON activity_records (name, start_time)');
 
     // TODO 列表表
     await db.execute('''
@@ -63,6 +72,10 @@ class DatabaseService {
         created_at INTEGER NOT NULL
       )
     ''');
+
+    // 🆕 新增：TODO列表排序索引
+    await db
+        .execute('CREATE INDEX idx_list_order ON todo_lists (display_order)');
 
     // TODO 项目表
     await db.execute('''
@@ -81,6 +94,12 @@ class DatabaseService {
     // 创建 TODO 项目表的索引
     await db.execute('CREATE INDEX idx_list_id ON todo_items (list_id)');
     await db.execute('CREATE INDEX idx_completed ON todo_items (is_completed)');
+    // 🆕 新增：用于列表内排序的复合索引
+    await db.execute(
+        'CREATE INDEX idx_list_order_items ON todo_items (list_id, display_order)');
+    // 🆕 新增：用于快速查询未完成任务的复合索引
+    await db.execute(
+        'CREATE INDEX idx_list_completed ON todo_items (list_id, is_completed)');
 
     // 活动历史表 (用于自动完成)
     await db.execute('''
@@ -90,6 +109,13 @@ class DatabaseService {
         use_count INTEGER NOT NULL DEFAULT 1
       )
     ''');
+
+    // 🆕 新增：用于最近使用排序的索引
+    await db.execute(
+        'CREATE INDEX idx_last_used ON activity_history (last_used DESC)');
+    // 🆕 新增：用于使用频率排序的索引
+    await db.execute(
+        'CREATE INDEX idx_use_count ON activity_history (use_count DESC)');
 
     // 应用设置表
     await db.execute('''

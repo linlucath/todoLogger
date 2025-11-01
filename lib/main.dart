@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 import 'dart:io';
+import 'dart:async';
+import 'package:flutter/foundation.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import 'pages/todo/todo.dart';
 import 'pages/time_logger/time_logger.dart';
@@ -9,41 +11,78 @@ import 'pages/sync/sync_settings.dart';
 import 'utils/performance_monitor.dart';
 import 'services/time_logger_storage.dart';
 import 'services/sync_service.dart';
+import 'services/notification_service.dart';
 
 // 全局同步服务实例
 late final SyncService syncService;
+// 全局通知服务实例
+late final NotificationService notificationService;
+// 🆕 全局导航 key，用于通知跳转
+final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
 
 void main() async {
-  // 性能监控: 记录启动时间
-  final monitor = PerformanceMonitor();
-  monitor.recordAppStart();
+  // 🆕 设置全局错误处理
+  await runZonedGuarded(
+    () async {
+      // 🆕 捕获Flutter框架错误
+      FlutterError.onError = (FlutterErrorDetails details) {
+        FlutterError.presentError(details);
+        debugPrint('Flutter错误: ${details.exception}');
+        debugPrint('堆栈跟踪: ${details.stack}');
+        // 在生产环境可以上报到错误跟踪服务
+      };
 
-  // 确保 Flutter 绑定初始化
-  WidgetsFlutterBinding.ensureInitialized();
+      // 🆕 捕获异步错误
+      PlatformDispatcher.instance.onError = (error, stack) {
+        debugPrint('异步错误: $error');
+        debugPrint('堆栈跟踪: $stack');
+        return true; // 表示错误已处理
+      };
 
-  // 初始化桌面平台的 sqflite
-  if (Platform.isWindows || Platform.isLinux || Platform.isMacOS) {
-    sqfliteFfiInit();
-    databaseFactory = databaseFactoryFfi;
-  }
+      // 性能监控: 记录启动时间
+      final monitor = PerformanceMonitor();
+      monitor.recordAppStart();
 
-  // 数据迁移: 从 SharedPreferences 迁移到 SQLite
-  await TimeLoggerStorage.migrateFromOldStorage();
+      // 确保 Flutter 绑定初始化
+      WidgetsFlutterBinding.ensureInitialized();
 
-  // 初始化同步服务
-  syncService = SyncService();
-  await syncService.initialize();
+      // 初始化桌面平台的 sqflite
+      if (Platform.isWindows || Platform.isLinux || Platform.isMacOS) {
+        sqfliteFfiInit();
+        databaseFactory = databaseFactoryFfi;
+      }
 
-  runApp(const MyApp());
+      // 数据迁移: 从 SharedPreferences 迁移到 SQLite
+      await TimeLoggerStorage.migrateFromOldStorage();
 
-  // 性能监控: 记录首帧时间
-  monitor.recordFirstFrame();
-  monitor.startFpsMonitoring();
+      // 初始化同步服务
+      syncService = SyncService();
+      await syncService.initialize();
 
-  // 5 秒后打印性能报告
-  Future.delayed(const Duration(seconds: 5), () {
-    monitor.printReport();
-  });
+      // 初始化通知服务 (仅移动端)
+      if (Platform.isAndroid || Platform.isIOS) {
+        notificationService = NotificationService();
+        await notificationService.initialize();
+      }
+
+      runApp(const MyApp());
+
+      // 性能监控: 记录首帧时间
+      monitor.recordFirstFrame();
+      monitor.startFpsMonitoring();
+
+      // 5 秒后打印性能报告
+      Future.delayed(const Duration(seconds: 5), () {
+        monitor.printReport();
+      });
+    },
+    (error, stack) {
+      // 🆕 捕获所有未处理的错误
+      debugPrint('未捕获的错误: $error');
+      debugPrint('堆栈跟踪: $stack');
+      // 在生产环境可以上报到错误跟踪服务
+    },
+  );
 }
 
 class MyApp extends StatelessWidget {
@@ -52,6 +91,7 @@ class MyApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
+      navigatorKey: navigatorKey, // 🆕 设置全局导航 key
       title: 'Time Logger++',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
@@ -96,11 +136,62 @@ class MainPage extends StatefulWidget {
   State<MainPage> createState() => _MainPageState();
 }
 
-class _MainPageState extends State<MainPage> {
+class _MainPageState extends State<MainPage> with WidgetsBindingObserver {
   int _currentIndex = 0;
 
   // 页面缓存: 保留已访问的页面状态
   final Map<int, Widget> _pageCache = {};
+
+  // TimeLoggerPage 的 GlobalKey，用于访问其状态
+  final GlobalKey<State<TimeLoggerPage>> _timeLoggerKey = GlobalKey();
+
+  @override
+  void initState() {
+    super.initState();
+    // 监听应用生命周期变化
+    WidgetsBinding.instance.addObserver(this);
+
+    // 🆕 设置通知导航回调
+    if (Platform.isAndroid || Platform.isIOS) {
+      notificationService.setNavigationCallback(() {
+        // 导航到 TimeLogger 页面
+        if (mounted) {
+          setState(() {
+            _currentIndex = 1; // TimeLogger 是索引 1
+          });
+        }
+      });
+    }
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    super.didChangeAppLifecycleState(state);
+
+    // 只在移动端处理
+    if (!Platform.isAndroid && !Platform.isIOS) return;
+
+    debugPrint('应用生命周期变化: $state');
+
+    // 通过 GlobalKey 获取 TimeLoggerPage 的状态并触发生命周期事件
+    final timeLoggerState = _timeLoggerKey.currentState;
+    if (timeLoggerState != null && timeLoggerState.mounted) {
+      if (state == AppLifecycleState.paused ||
+          state == AppLifecycleState.inactive) {
+        // 应用进入后台
+        (timeLoggerState as dynamic).onAppPaused();
+      } else if (state == AppLifecycleState.resumed) {
+        // 应用回到前台
+        (timeLoggerState as dynamic).onAppResumed();
+      }
+    }
+  }
 
   // 获取页面 (懒加载 + 缓存)
   Widget _getPage(int index) {
@@ -116,7 +207,8 @@ class _MainPageState extends State<MainPage> {
         page = const TodoPage();
         break;
       case 1:
-        page = const TimeLoggerPage();
+        // TimeLoggerPage 使用 GlobalKey 以便访问其状态
+        page = TimeLoggerPage(key: _timeLoggerKey);
         break;
       case 2:
         page = const TargetPage();

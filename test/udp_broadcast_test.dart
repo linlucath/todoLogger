@@ -159,6 +159,6 @@ void main() async {
   } catch (e, stack) {
     print('❌ 测试失败: $e');
     print('堆栈: $stack');
-    socket?.close();
+    socket.close();
   }
 }

@@ -1,3 +1,14 @@
+/// 同步模式
+enum SyncMode {
+  incremental, // 增量同步：只同步修改过的数据
+  full, // 全量同步：同步所有数据
+}
+
+/// 可同步数据的基类接口
+abstract class SyncableData {
+  SyncMetadata get syncMetadata;
+}
+
 /// 同步元数据 - 用于冲突检测和解决
 class SyncMetadata {
   final DateTime lastModifiedAt; // 最后修改时间
@@ -72,13 +83,14 @@ class SyncMetadata {
 }
 
 /// 带同步元数据的待办事项
-class SyncableTodoItem {
+class SyncableTodoItem implements SyncableData {
   final String id;
   final String title;
   final String? description;
   final bool isCompleted;
   final DateTime createdAt;
   final String? listId;
+  @override
   final SyncMetadata syncMetadata;
 
   SyncableTodoItem({
@@ -135,12 +147,13 @@ class SyncableTodoItem {
 }
 
 /// 带同步元数据的待办列表
-class SyncableTodoList {
+class SyncableTodoList implements SyncableData {
   final String id;
   final String name;
   final bool isExpanded;
   final int colorValue;
   final List<String> itemIds;
+  @override
   final SyncMetadata syncMetadata;
 
   SyncableTodoList({
@@ -192,13 +205,14 @@ class SyncableTodoList {
 }
 
 /// 带同步元数据的时间日志
-class SyncableTimeLog {
+class SyncableTimeLog implements SyncableData {
   final String id; // 添加唯一ID
   final String name;
   final DateTime startTime;
   final DateTime? endTime;
   final String? linkedTodoId;
   final String? linkedTodoTitle;
+  @override
   final SyncMetadata syncMetadata;
 
   SyncableTimeLog({
@@ -257,7 +271,7 @@ class SyncableTimeLog {
 }
 
 /// 带同步元数据的目标
-class SyncableTarget {
+class SyncableTarget implements SyncableData {
   final String id;
   final String name;
   final int type; // TargetType enum index
@@ -268,6 +282,7 @@ class SyncableTarget {
   final DateTime createdAt;
   final bool isActive;
   final int colorValue;
+  @override
   final SyncMetadata syncMetadata;
 
   SyncableTarget({

@@ -102,6 +102,7 @@ enum SyncMessageType {
   timerStart, // 开始计时
   timerStop, // 停止计时
   timerUpdate, // 计时更新
+  timerForceStop, // 强制停止计时（冲突解决）
 
   // 错误
   error, // 错误消息
@@ -339,4 +340,54 @@ class SyncDataUpdatedEvent {
     required this.itemCount,
     DateTime? timestamp,
   }) : timestamp = timestamp ?? DateTime.now();
+}
+
+/// 同步进度事件
+class SyncProgressEvent {
+  final String deviceId; // 目标设备ID
+  final String deviceName; // 目标设备名称
+  final String
+      phase; // 当前阶段：connecting, syncing_todos, syncing_logs, syncing_targets, completed
+  final String dataType; // 当前同步的数据类型
+  final int currentItem; // 当前处理的项目索引
+  final int totalItems; // 总项目数
+  final double progress; // 进度百分比 (0.0 - 1.0)
+  final String? message; // 状态消息
+  final DateTime timestamp; // 时间戳
+
+  SyncProgressEvent({
+    required this.deviceId,
+    required this.deviceName,
+    required this.phase,
+    required this.dataType,
+    this.currentItem = 0,
+    this.totalItems = 0,
+    this.progress = 0.0,
+    this.message,
+    DateTime? timestamp,
+  }) : timestamp = timestamp ?? DateTime.now();
+
+  SyncProgressEvent copyWith({
+    String? deviceId,
+    String? deviceName,
+    String? phase,
+    String? dataType,
+    int? currentItem,
+    int? totalItems,
+    double? progress,
+    String? message,
+    DateTime? timestamp,
+  }) {
+    return SyncProgressEvent(
+      deviceId: deviceId ?? this.deviceId,
+      deviceName: deviceName ?? this.deviceName,
+      phase: phase ?? this.phase,
+      dataType: dataType ?? this.dataType,
+      currentItem: currentItem ?? this.currentItem,
+      totalItems: totalItems ?? this.totalItems,
+      progress: progress ?? this.progress,
+      message: message ?? this.message,
+      timestamp: timestamp ?? this.timestamp,
+    );
+  }
 }

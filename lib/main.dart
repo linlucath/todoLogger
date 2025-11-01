@@ -3,11 +3,13 @@ import 'dart:io';
 import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
+import 'package:window_manager/window_manager.dart';
 import 'pages/todo/todo.dart';
 import 'pages/time_logger/time_logger.dart';
 import 'pages/target/target.dart';
 import 'pages/statistics/statistics.dart';
 import 'pages/sync/sync_settings.dart';
+import 'widgets/custom_title_bar.dart';
 import 'utils/performance_monitor.dart';
 import 'services/time_logger_storage.dart';
 import 'services/sync_service.dart';
@@ -45,6 +47,26 @@ void main() async {
 
       // 确保 Flutter 绑定初始化
       WidgetsFlutterBinding.ensureInitialized();
+
+      // 初始化 Windows 窗口管理器（仅桌面平台）
+      if (Platform.isWindows || Platform.isLinux || Platform.isMacOS) {
+        await windowManager.ensureInitialized();
+
+        // 配置窗口选项
+        WindowOptions windowOptions = const WindowOptions(
+          size: Size(800, 600),
+          minimumSize: Size(400, 500),
+          center: true,
+          backgroundColor: Colors.transparent,
+          skipTaskbar: false,
+          titleBarStyle: TitleBarStyle.hidden, // 隐藏默认标题栏
+        );
+
+        windowManager.waitUntilReadyToShow(windowOptions, () async {
+          await windowManager.show();
+          await windowManager.focus();
+        });
+      }
 
       // 初始化桌面平台的 sqflite
       if (Platform.isWindows || Platform.isLinux || Platform.isMacOS) {
@@ -230,14 +252,26 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      // 使用 Offstage 保持页面状态
-      body: Stack(
-        children: List.generate(5, (index) {
-          return Offstage(
-            offstage: _currentIndex != index,
-            child: _getPage(index),
-          );
-        }),
+      // 使用 Column 包含自定义标题栏和页面内容
+      body: Column(
+        children: [
+          // 桌面平台显示自定义标题栏
+          if (Platform.isWindows || Platform.isLinux || Platform.isMacOS)
+            const CustomTitleBar(
+              title: 'cc',
+            ),
+          // 页面内容
+          Expanded(
+            child: Stack(
+              children: List.generate(5, (index) {
+                return Offstage(
+                  offstage: _currentIndex != index,
+                  child: _getPage(index),
+                );
+              }),
+            ),
+          ),
+        ],
       ),
       bottomNavigationBar: BottomNavigationBar(
         currentIndex: _currentIndex,

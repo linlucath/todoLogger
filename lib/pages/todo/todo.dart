@@ -781,58 +781,8 @@ class _TodoPageState extends State<TodoPage> {
     final isEmpty = _todoLists.isEmpty;
 
     return Scaffold(
-      appBar: PreferredSize(
-        preferredSize: const Size.fromHeight(70),
-        child: Container(
-          decoration: BoxDecoration(
-            gradient: LinearGradient(
-              begin: Alignment.topCenter,
-              end: Alignment.bottomRight,
-              colors: [
-                const Color.fromARGB(255, 215, 172, 228),
-                const Color.fromARGB(255, 237, 234, 238),
-              ],
-            ),
-            boxShadow: [
-              BoxShadow(
-                color: const Color.fromARGB(255, 234, 166, 243)
-                    .withValues(alpha: 0.3),
-                blurRadius: 8,
-                offset: const Offset(0, 2),
-              ),
-            ],
-          ),
-          child: AppBar(
-            title: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Container(
-                  padding: const EdgeInsets.all(8),
-                  decoration: BoxDecoration(
-                    color: Colors.white.withValues(alpha: 0.2),
-                    borderRadius: BorderRadius.circular(10),
-                  ),
-                  child: const Icon(
-                    Icons.check_circle_outline,
-                    size: 24,
-                  ),
-                ),
-                const SizedBox(width: 12),
-                const Text(
-                  'TODO',
-                  style: TextStyle(
-                    fontSize: 24,
-                    fontWeight: FontWeight.bold,
-                    letterSpacing: 1.2,
-                  ),
-                ),
-              ],
-            ),
-            centerTitle: true,
-            backgroundColor: Colors.transparent,
-            elevation: 0,
-          ),
-        ),
+      appBar: AppBar(
+        title: const Text('To Do'),
       ),
       body: _isLoading
           ? const Center(child: CircularProgressIndicator())

@@ -28,6 +28,8 @@ dependencies:
   network_info_plus: ^5.0.0
   # 后台通知
   flutter_local_notifications: ^17.0.0
+  # Windows 窗口管理
+  window_manager: ^0.3.7
 
 dev_dependencies:
   flutter_test:

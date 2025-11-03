@@ -4,6 +4,7 @@ import 'database_service.dart';
 
 /// 活动记录数据模型
 class ActivityRecordData {
+  final int? id; // 数据库ID，用于更新和删除
   final String name;
   final DateTime startTime;
   final DateTime? endTime;
@@ -11,6 +12,7 @@ class ActivityRecordData {
   final String? linkedTodoTitle;
 
   ActivityRecordData({
+    this.id,
     required this.name,
     required this.startTime,
     this.endTime,
@@ -19,6 +21,7 @@ class ActivityRecordData {
   });
 
   Map<String, dynamic> toJson() => {
+        'id': id,
         'name': name,
         'startTime': startTime.toIso8601String(),
         'endTime': endTime?.toIso8601String(),
@@ -28,6 +31,7 @@ class ActivityRecordData {
 
   factory ActivityRecordData.fromJson(Map<String, dynamic> json) =>
       ActivityRecordData(
+        id: json['id'] as int?,
         name: json['name'] as String,
         startTime: DateTime.parse(json['startTime'] as String),
         endTime: json['endTime'] != null
@@ -36,6 +40,28 @@ class ActivityRecordData {
         linkedTodoId: json['linkedTodoId'] as String?,
         linkedTodoTitle: json['linkedTodoTitle'] as String?,
       );
+
+  // 创建一个副本，支持修改字段
+  ActivityRecordData copyWith({
+    int? id,
+    String? name,
+    DateTime? startTime,
+    DateTime? endTime,
+    String? linkedTodoId,
+    String? linkedTodoTitle,
+    bool clearLinkedTodo = false,
+  }) {
+    return ActivityRecordData(
+      id: id ?? this.id,
+      name: name ?? this.name,
+      startTime: startTime ?? this.startTime,
+      endTime: endTime ?? this.endTime,
+      linkedTodoId:
+          clearLinkedTodo ? null : (linkedTodoId ?? this.linkedTodoId),
+      linkedTodoTitle:
+          clearLinkedTodo ? null : (linkedTodoTitle ?? this.linkedTodoTitle),
+    );
+  }
 }
 
 /// 时间记录存储服务 - 使用 SQLite
@@ -44,7 +70,7 @@ class TimeLoggerStorage {
 
   // ==================== 活动记录 ====================
 
-  /// 保存活动记录
+  /// 保存活动记录+
   static Future<int> addRecord(ActivityRecordData record) async {
     final id = await _db.insertActivityRecord({
       'name': record.name,
@@ -185,6 +211,7 @@ class TimeLoggerStorage {
 
   static ActivityRecordData _mapToRecord(Map<String, dynamic> map) {
     return ActivityRecordData(
+      id: map['id'] as int?,
       name: map['name'] as String,
       startTime: DateTime.fromMillisecondsSinceEpoch(map['start_time'] as int),
       endTime: map['end_time'] != null

@@ -9,7 +9,8 @@ class StatisticsPage extends StatefulWidget {
   State<StatisticsPage> createState() => _StatisticsPageState();
 }
 
-class _StatisticsPageState extends State<StatisticsPage> {
+class _StatisticsPageState extends State<StatisticsPage>
+    with AutomaticKeepAliveClientMixin {
   String _selectedPeriod = 'Week';
   final List<String> _periods = ['Day', 'Week', 'Month', 'Year'];
 
@@ -17,8 +18,18 @@ class _StatisticsPageState extends State<StatisticsPage> {
   bool _isLoading = true;
 
   @override
+  bool get wantKeepAlive => true;
+
+  @override
   void initState() {
     super.initState();
+    _loadStatistics();
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    // 每次页面可见时刷新数据
     _loadStatistics();
   }
 
@@ -60,10 +71,18 @@ class _StatisticsPageState extends State<StatisticsPage> {
 
   @override
   Widget build(BuildContext context) {
+    super.build(context); // Required by AutomaticKeepAliveClientMixin
+
     return Scaffold(
       appBar: AppBar(
         title: const Text('Statistics'),
         actions: [
+          // 添加刷新按钮
+          IconButton(
+            icon: const Icon(Icons.refresh),
+            onPressed: _loadStatistics,
+            tooltip: 'Refresh',
+          ),
           IconButton(
             icon: const Icon(Icons.file_download),
             onPressed: () {
@@ -77,42 +96,54 @@ class _StatisticsPageState extends State<StatisticsPage> {
       ),
       body: _isLoading
           ? const Center(child: CircularProgressIndicator())
-          : _statisticsData == null || _statisticsData!.activityCount == 0
-              ? _buildEmptyState()
-              : _buildStatisticsContent(),
+          : RefreshIndicator(
+              onRefresh: _loadStatistics,
+              child:
+                  _statisticsData == null || _statisticsData!.activityCount == 0
+                      ? _buildEmptyState()
+                      : _buildStatisticsContent(),
+            ),
     );
   }
 
   /// 构建空状态
   Widget _buildEmptyState() {
-    return Center(
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Icon(
-            Icons.insert_chart_outlined,
-            size: 80,
-            color: Colors.grey[400],
-          ),
-          const SizedBox(height: 16),
-          Text(
-            'No data available',
-            style: TextStyle(
-              fontSize: 18,
-              color: Colors.grey[600],
-              fontWeight: FontWeight.w500,
+    return ListView(
+      physics: const AlwaysScrollableScrollPhysics(),
+      children: [
+        SizedBox(
+          height: MediaQuery.of(context).size.height * 0.6,
+          child: Center(
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Icon(
+                  Icons.insert_chart_outlined,
+                  size: 80,
+                  color: Colors.grey[400],
+                ),
+                const SizedBox(height: 16),
+                Text(
+                  'No data available',
+                  style: TextStyle(
+                    fontSize: 18,
+                    color: Colors.grey[600],
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  'Start logging activities to see statistics',
+                  style: TextStyle(
+                    fontSize: 14,
+                    color: Colors.grey[500],
+                  ),
+                ),
+              ],
             ),
           ),
-          const SizedBox(height: 8),
-          Text(
-            'Start logging activities to see statistics',
-            style: TextStyle(
-              fontSize: 14,
-              color: Colors.grey[500],
-            ),
-          ),
-        ],
-      ),
+        ),
+      ],
     );
   }
 

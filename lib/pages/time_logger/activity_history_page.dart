@@ -1,10 +1,13 @@
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import '../../services/time_logger_storage.dart';
+import './edit_record_dialog.dart';
 
-/// 优化版活动历史页面 - 支持分页和懒加载
+/// 优化版活动历史页面 - 支持分页和懒加载，以及编辑、删除、创建功能
 class ActivityHistoryPage extends StatefulWidget {
-  const ActivityHistoryPage({super.key});
+  final VoidCallback? onDataChanged; // 数据变化时的回调
+
+  const ActivityHistoryPage({super.key, this.onDataChanged});
 
   @override
   State<ActivityHistoryPage> createState() => _ActivityHistoryPageState();
@@ -226,7 +229,56 @@ class _ActivityHistoryPageState extends State<ActivityHistoryPage> {
               child:
                   _records.isEmpty ? _buildEmptyState() : _buildRecordsList(),
             ),
+      // 添加浮动操作按钮，用于创建新记录
+      floatingActionButton: FloatingActionButton(
+        onPressed: _createNewRecord,
+        tooltip: 'Add new activity',
+        child: const Icon(Icons.add),
+      ),
     );
+  }
+
+  /// 创建新记录
+  Future<void> _createNewRecord() async {
+    final result = await showDialog<bool>(
+      context: context,
+      builder: (context) => EditRecordDialog(
+        onSaved: () {
+          // 刷新列表
+          _refreshRecords();
+          // 通知数据变化
+          widget.onDataChanged?.call();
+        },
+      ),
+    );
+
+    if (result == true && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Activity created successfully')),
+      );
+    }
+  }
+
+  /// 编辑记录
+  Future<void> _editRecord(ActivityRecordData record) async {
+    final result = await showDialog<bool>(
+      context: context,
+      builder: (context) => EditRecordDialog(
+        record: record,
+        onSaved: () {
+          // 刷新列表
+          _refreshRecords();
+          // 通知数据变化
+          widget.onDataChanged?.call();
+        },
+      ),
+    );
+
+    if (result == true && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Activity updated successfully')),
+      );
+    }
   }
 
   Widget _buildEmptyState() {
@@ -398,75 +450,162 @@ class _ActivityHistoryPageState extends State<ActivityHistoryPage> {
         ? record.endTime!.difference(record.startTime).inSeconds
         : 0;
 
-    return ListTile(
-      contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-      leading: CircleAvatar(
-        backgroundColor: record.endTime != null
-            ? Colors.green.withValues(alpha: 0.2)
-            : Colors.orange.withValues(alpha: 0.2),
-        child: Icon(
-          record.endTime != null ? Icons.check : Icons.play_arrow,
-          color: record.endTime != null ? Colors.green : Colors.orange,
+    return Dismissible(
+      key: Key('record_${record.id}'),
+      direction: DismissDirection.endToStart,
+      background: Container(
+        alignment: Alignment.centerRight,
+        padding: const EdgeInsets.only(right: 20),
+        color: Colors.red,
+        child: const Icon(
+          Icons.delete,
+          color: Colors.white,
+          size: 32,
         ),
       ),
-      title: Text(
-        record.name,
-        style: const TextStyle(
-          fontSize: 16,
-          fontWeight: FontWeight.w500,
-        ),
-      ),
-      subtitle: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const SizedBox(height: 4),
-          Row(
-            children: [
-              Icon(Icons.access_time, size: 14, color: Colors.grey[600]),
-              const SizedBox(width: 4),
-              Text(
-                '${DateFormat('HH:mm').format(record.startTime)} - ${record.endTime != null ? DateFormat('HH:mm').format(record.endTime!) : 'Ongoing'}',
-                style: TextStyle(fontSize: 12, color: Colors.grey[600]),
+      confirmDismiss: (direction) async {
+        // 显示确认对话框
+        return await showDialog<bool>(
+          context: context,
+          builder: (context) => AlertDialog(
+            title: const Text('Delete Activity'),
+            content: Text('Are you sure you want to delete "${record.name}"?'),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context, false),
+                child: const Text('Cancel'),
+              ),
+              ElevatedButton(
+                onPressed: () => Navigator.pop(context, true),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.red,
+                ),
+                child: const Text('Delete'),
               ),
             ],
           ),
-          if (record.linkedTodoTitle != null) ...[
+        );
+      },
+      onDismissed: (direction) async {
+        try {
+          await TimeLoggerStorage.deleteRecord(record.id!);
+
+          if (mounted) {
+            // 从本地列表中移除，避免重新加载整个列表
+            setState(() {
+              _records.removeWhere((r) => r.id == record.id);
+            });
+
+            // 通知数据变化
+            widget.onDataChanged?.call();
+
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: const Text('Activity deleted'),
+                action: SnackBarAction(
+                  label: 'Undo',
+                  onPressed: () {
+                    // 刷新列表以恢复（如果有撤销功能的话）
+                    _refreshRecords();
+                  },
+                ),
+              ),
+            );
+          }
+        } catch (e) {
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(content: Text('Failed to delete: $e')),
+            );
+            // 刷新以恢复UI
+            _refreshRecords();
+          }
+        }
+      },
+      child: ListTile(
+        contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+        leading: CircleAvatar(
+          backgroundColor: record.endTime != null
+              ? Colors.green.withValues(alpha: 0.2)
+              : Colors.orange.withValues(alpha: 0.2),
+          child: Icon(
+            record.endTime != null ? Icons.check : Icons.play_arrow,
+            color: record.endTime != null ? Colors.green : Colors.orange,
+          ),
+        ),
+        title: Text(
+          record.name,
+          style: const TextStyle(
+            fontSize: 16,
+            fontWeight: FontWeight.w500,
+          ),
+        ),
+        subtitle: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
             const SizedBox(height: 4),
             Row(
               children: [
-                Icon(Icons.link, size: 14, color: Colors.grey[600]),
+                Icon(Icons.access_time, size: 14, color: Colors.grey[600]),
                 const SizedBox(width: 4),
-                Expanded(
-                  child: Text(
-                    record.linkedTodoTitle!,
-                    style: TextStyle(
-                      fontSize: 12,
-                      color: Colors.grey[600],
-                      fontStyle: FontStyle.italic,
-                    ),
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                  ),
+                Text(
+                  '${DateFormat('HH:mm').format(record.startTime)} - ${record.endTime != null ? DateFormat('HH:mm').format(record.endTime!) : 'Ongoing'}',
+                  style: TextStyle(fontSize: 12, color: Colors.grey[600]),
                 ),
               ],
             ),
-          ],
-        ],
-      ),
-      trailing: record.endTime != null
-          ? Text(
-              _formatDuration(duration),
-              style: const TextStyle(
-                fontSize: 14,
-                fontWeight: FontWeight.bold,
-                color: Colors.green,
+            if (record.linkedTodoTitle != null) ...[
+              const SizedBox(height: 4),
+              Row(
+                children: [
+                  Icon(Icons.link, size: 14, color: Colors.grey[600]),
+                  const SizedBox(width: 4),
+                  Expanded(
+                    child: Text(
+                      record.linkedTodoTitle!,
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: Colors.grey[600],
+                        fontStyle: FontStyle.italic,
+                      ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                ],
               ),
-            )
-          : const SizedBox(
-              width: 20,
-              height: 20,
-              child: CircularProgressIndicator(strokeWidth: 2),
+            ],
+          ],
+        ),
+        trailing: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (record.endTime != null)
+              Text(
+                _formatDuration(duration),
+                style: const TextStyle(
+                  fontSize: 14,
+                  fontWeight: FontWeight.bold,
+                  color: Colors.green,
+                ),
+              )
+            else
+              const SizedBox(
+                width: 20,
+                height: 20,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              ),
+            // 编辑按钮
+            IconButton(
+              icon: const Icon(Icons.edit, size: 20),
+              onPressed: () => _editRecord(record),
+              tooltip: 'Edit',
             ),
+          ],
+        ),
+        // 点击整个项目也能编辑
+        onTap: () => _editRecord(record),
+      ),
     );
   }
 }

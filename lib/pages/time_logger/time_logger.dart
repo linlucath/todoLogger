@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:intl/intl.dart';
 import '../../services/time_logger_storage.dart';
 import '../../services/notification_service.dart';
+import '../../services/sync_service.dart';
 import 'activity_history_page.dart';
 import './next_activity_dialog.dart';
 import './start_record_dialog.dart';
@@ -34,7 +35,9 @@ class ActivityRecord {
 }
 
 class TimeLoggerPage extends StatefulWidget {
-  const TimeLoggerPage({super.key});
+  final SyncService? syncService; // 🆕 添加同步服务
+
+  const TimeLoggerPage({super.key, this.syncService});
 
   @override
   State<TimeLoggerPage> createState() => _TimeLoggerPageState();
@@ -58,6 +61,9 @@ class _TimeLoggerPageState extends State<TimeLoggerPage> {
   // 用户使用过的活动名称（用于快速选择）
   final Set<String> _activityHistory = {};
 
+  // 🆕 同步数据更新监听
+  StreamSubscription? _dataUpdateSubscription;
+
   // 当前活动的经过秒数（基于实际时间计算）
   int get _currentActivitySeconds {
     if (_currentActivity == null) return 0;
@@ -68,6 +74,73 @@ class _TimeLoggerPageState extends State<TimeLoggerPage> {
   void initState() {
     super.initState();
     _loadSavedData();
+    _setupSyncListener(); // 🆕 设置同步监听
+  }
+
+  // 🆕 设置同步服务监听
+  void _setupSyncListener() {
+    if (widget.syncService != null) {
+      print('🔔 [TimeLogger] 设置同步数据更新监听');
+      _dataUpdateSubscription =
+          widget.syncService!.dataUpdatedStream.listen((event) {
+        // 当接收到时间日志更新时，重新加载当前活动
+        if (event.dataType == 'timeLogs') {
+          print('🔄 [TimeLogger] 收到时间日志更新通知，重新加载数据');
+          _reloadCurrentActivity();
+        }
+      });
+    }
+  }
+
+  // 🆕 重新加载当前活动（同步后调用）
+  Future<void> _reloadCurrentActivity() async {
+    print('📂 [TimeLogger] 重新加载当前活动...');
+
+    try {
+      final currentActivity = await TimeLoggerStorage.getCurrentActivity();
+
+      if (!mounted) return;
+
+      setState(() {
+        if (currentActivity != null) {
+          // 检查是否需要更新当前活动
+          if (_currentActivity == null ||
+              _currentActivity!.startTime != currentActivity.startTime ||
+              _currentActivity!.name != currentActivity.name) {
+            print('🔄 [TimeLogger] 更新当前活动: ${currentActivity.name}');
+
+            // 停止旧的计时器
+            _timer?.cancel();
+
+            _currentActivity = ActivityRecord(
+              name: currentActivity.name,
+              startTime: currentActivity.startTime,
+              endTime: currentActivity.endTime,
+              linkedTodoId: currentActivity.linkedTodoId,
+              linkedTodoTitle: currentActivity.linkedTodoTitle,
+            );
+            _isRecording = true;
+
+            // 启动新的计时器
+            _timer = Timer.periodic(const Duration(seconds: 1), (timer) {
+              if (mounted) {
+                setState(() {});
+              }
+            });
+          }
+        } else {
+          // 当前活动被清除（可能被远程设备结束）
+          if (_currentActivity != null) {
+            print('⏹️  [TimeLogger] 当前活动已被结束');
+            _timer?.cancel();
+            _currentActivity = null;
+            _isRecording = false;
+          }
+        }
+      });
+    } catch (e) {
+      print('❌ [TimeLogger] 重新加载当前活动失败: $e');
+    }
   }
 
   // 加载保存的数据
@@ -125,6 +198,7 @@ class _TimeLoggerPageState extends State<TimeLoggerPage> {
   @override
   void dispose() {
     _timer?.cancel();
+    _dataUpdateSubscription?.cancel(); // 🆕 取消同步监听
     // 清理通知
     if (Platform.isAndroid || Platform.isIOS) {
       NotificationService().stopBackgroundNotifications();

@@ -227,7 +227,7 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver {
         break;
       case 1:
         // TimeLoggerPage 使用 GlobalKey 以便访问其状态
-        page = TimeLoggerPage(key: _timeLoggerKey);
+        page = TimeLoggerPage(key: _timeLoggerKey, syncService: syncService);
         break;
       case 2:
         page = const TargetPage();

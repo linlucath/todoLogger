@@ -7,11 +7,12 @@ import '../../services/notification_service.dart';
 import 'activity_history_page.dart';
 import './next_activity_dialog.dart';
 import './start_record_dialog.dart';
+import './edit_activity_dialog.dart'; // 🆕 导入编辑对话框
 import './notification_settings_dialog.dart'; // 🆕 导入通知设置对话框
 
 // 记录数据类
 class ActivityRecord {
-  final String name;
+  String name; // 改为可变，支持编辑
   final DateTime startTime;
   DateTime? endTime;
   String? linkedTodoId;
@@ -264,6 +265,52 @@ class _TimeLoggerPageState extends State<TimeLoggerPage> {
     }
   }
 
+  // 🆕 编辑当前活动名称
+  void _editCurrentActivityName() async {
+    if (_currentActivity == null) return;
+
+    final result = await showDialog<String>(
+      context: context,
+      builder: (BuildContext context) {
+        return EditActivityDialog(
+          currentName: _currentActivity!.name,
+          activityHistory: _activityHistory.toList(),
+        );
+      },
+    );
+
+    if (result != null && result != _currentActivity!.name) {
+      setState(() {
+        _currentActivity!.name = result;
+        // 将新名称添加到历史记录
+        _activityHistory.add(result);
+      });
+
+      // 保存修改后的状态
+      await _saveCurrentState();
+
+      // 更新后台通知（如果正在后台）
+      if ((Platform.isAndroid || Platform.isIOS) &&
+          _isRecording &&
+          _isInBackground) {
+        NotificationService().startBackgroundNotifications(
+          _currentActivity!.name,
+          startTime: _currentActivity!.startTime,
+        );
+      }
+
+      // 显示提示
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Activity renamed to "$result"'),
+            duration: const Duration(seconds: 2),
+          ),
+        );
+      }
+    }
+  }
+
   String _formatTime(int seconds) {
     final hours = seconds ~/ 3600;
     final minutes = (seconds % 3600) ~/ 60;
@@ -454,6 +501,22 @@ class _TimeLoggerPageState extends State<TimeLoggerPage> {
                             fontSize: 20,
                             fontWeight: FontWeight.w600,
                             color: Theme.of(context).primaryColor,
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        // 🆕 编辑按钮
+                        InkWell(
+                          onTap: _editCurrentActivityName,
+                          borderRadius: BorderRadius.circular(20),
+                          child: Padding(
+                            padding: const EdgeInsets.all(4),
+                            child: Icon(
+                              Icons.edit,
+                              size: 18,
+                              color: Theme.of(context)
+                                  .primaryColor
+                                  .withValues(alpha: 0.7),
+                            ),
                           ),
                         ),
                       ],

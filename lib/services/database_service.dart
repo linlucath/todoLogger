@@ -3,7 +3,7 @@ import 'package:path/path.dart';
 import 'dart:async';
 
 /// SQLite 数据库服务
-/// 用于高效存储和查询时间记录和 TODO 数据
+/// 用于高效存储和查询时间记录和 To Do 数据
 class DatabaseService {
   static Database? _database;
   static final DatabaseService _instance = DatabaseService._internal();
@@ -61,7 +61,7 @@ class DatabaseService {
     await db.execute(
         'CREATE INDEX idx_name_start ON activity_records (name, start_time)');
 
-    // TODO 列表表
+    // To Do 列表表
     await db.execute('''
       CREATE TABLE todo_lists (
         id TEXT PRIMARY KEY,
@@ -73,11 +73,11 @@ class DatabaseService {
       )
     ''');
 
-    // 🆕 新增：TODO列表排序索引
+    // 🆕 新增：To Do列表排序索引
     await db
         .execute('CREATE INDEX idx_list_order ON todo_lists (display_order)');
 
-    // TODO 项目表
+    // To Do 项目表
     await db.execute('''
       CREATE TABLE todo_items (
         id TEXT PRIMARY KEY,
@@ -91,12 +91,14 @@ class DatabaseService {
       )
     ''');
 
-    // 创建 TODO 项目表的索引
+    // 创建 To Do 项目表的索引
     await db.execute('CREATE INDEX idx_list_id ON todo_items (list_id)');
     await db.execute('CREATE INDEX idx_completed ON todo_items (is_completed)');
+
     // 🆕 新增：用于列表内排序的复合索引
     await db.execute(
         'CREATE INDEX idx_list_order_items ON todo_items (list_id, display_order)');
+
     // 🆕 新增：用于快速查询未完成任务的复合索引
     await db.execute(
         'CREATE INDEX idx_list_completed ON todo_items (list_id, is_completed)');
@@ -113,6 +115,7 @@ class DatabaseService {
     // 🆕 新增：用于最近使用排序的索引
     await db.execute(
         'CREATE INDEX idx_last_used ON activity_history (last_used DESC)');
+
     // 🆕 新增：用于使用频率排序的索引
     await db.execute(
         'CREATE INDEX idx_use_count ON activity_history (use_count DESC)');
@@ -215,15 +218,15 @@ class DatabaseService {
     return Sqflite.firstIntValue(result) ?? 0;
   }
 
-  // ==================== TODO 相关 ====================
+  // ==================== To Do 相关 ====================
 
-  /// 插入 TODO 列表
+  /// 插入 To Do 列表
   Future<int> insertTodoList(Map<String, dynamic> list) async {
     final db = await database;
     return await db.insert('todo_lists', list);
   }
 
-  /// 更新 TODO 列表
+  /// 更新 To Do 列表
   Future<int> updateTodoList(String id, Map<String, dynamic> list) async {
     final db = await database;
     return await db.update(
@@ -234,13 +237,13 @@ class DatabaseService {
     );
   }
 
-  /// 获取所有 TODO 列表
+  /// 获取所有 To Do 列表
   Future<List<Map<String, dynamic>>> getTodoLists() async {
     final db = await database;
     return await db.query('todo_lists', orderBy: 'display_order ASC');
   }
 
-  /// 删除 TODO 列表
+  /// 删除 To Do 列表
   Future<int> deleteTodoList(String id) async {
     final db = await database;
     return await db.delete(
@@ -250,13 +253,13 @@ class DatabaseService {
     );
   }
 
-  /// 插入 TODO 项目
+  /// 插入 To Do 项目
   Future<int> insertTodoItem(Map<String, dynamic> item) async {
     final db = await database;
     return await db.insert('todo_items', item);
   }
 
-  /// 更新 TODO 项目
+  /// 更新 To Do 项目
   Future<int> updateTodoItem(String id, Map<String, dynamic> item) async {
     final db = await database;
     return await db.update(
@@ -267,7 +270,7 @@ class DatabaseService {
     );
   }
 
-  /// 获取所有 TODO 项目
+  /// 获取所有 To Do 项目
   Future<List<Map<String, dynamic>>> getTodoItems({String? listId}) async {
     final db = await database;
 
@@ -283,7 +286,7 @@ class DatabaseService {
     return await db.query('todo_items', orderBy: 'display_order ASC');
   }
 
-  /// 获取独立的 TODO 项目 (不属于任何列表)
+  /// 获取独立的 To Do 项目 (不属于任何列表)
   Future<List<Map<String, dynamic>>> getIndependentTodoItems() async {
     final db = await database;
     return await db.query(
@@ -293,7 +296,7 @@ class DatabaseService {
     );
   }
 
-  /// 删除 TODO 项目
+  /// 删除 To Do 项目
   Future<int> deleteTodoItem(String id) async {
     final db = await database;
     return await db.delete(
@@ -368,14 +371,6 @@ class DatabaseService {
 
     if (results.isEmpty) return null;
     return results.first['value'] as String;
-  }
-
-  // ==================== 数据迁移 ====================
-
-  /// 从 SharedPreferences 迁移数据到 SQLite
-  Future<void> migrateFromSharedPreferences() async {
-    // 这个方法将在 time_logger_storage_v2.dart 中实现
-    // 用于一次性数据迁移
   }
 
   // ==================== 数据库维护 ====================

@@ -1,5 +1,6 @@
 import 'dart:io';
 import 'package:uuid/uuid.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 /// 设备信息
 class DeviceInfo {
@@ -59,21 +60,41 @@ class DeviceInfo {
     );
   }
 
-  /// 生成当前设备信息
+  /// 生成当前设备信息（持久化设备ID和设备名称）
   static Future<DeviceInfo> getCurrentDevice(int port) async {
-    final uuid = const Uuid();
-    final deviceId = uuid.v4();
-    final deviceName = Platform.isWindows
-        ? 'Windows-${Platform.localHostname}'
-        : Platform.isMacOS
-            ? 'Mac-${Platform.localHostname}'
-            : Platform.isLinux
-                ? 'Linux-${Platform.localHostname}'
-                : Platform.isAndroid
-                    ? 'Android'
-                    : Platform.isIOS
-                        ? 'iOS'
-                        : 'Unknown';
+    final prefs = await SharedPreferences.getInstance();
+
+    // 1️⃣ 持久化设备ID - 确保同一设备始终使用相同ID
+    String? deviceId = prefs.getString('sync_device_id');
+    if (deviceId == null) {
+      final uuid = const Uuid();
+      deviceId = uuid.v4();
+      await prefs.setString('sync_device_id', deviceId);
+      print('🆕 [DeviceInfo] 生成新设备ID: $deviceId');
+    } else {
+      print('📱 [DeviceInfo] 加载已有设备ID: $deviceId');
+    }
+
+    // 2️⃣ 持久化设备名称 - 用户可修改，优先使用保存的名称
+    String? deviceName = prefs.getString('sync_device_name');
+    if (deviceName == null) {
+      // 首次运行，根据平台生成默认名称
+      deviceName = Platform.isWindows
+          ? 'Windows-${Platform.localHostname}'
+          : Platform.isMacOS
+              ? 'Mac-${Platform.localHostname}'
+              : Platform.isLinux
+                  ? 'Linux-${Platform.localHostname}'
+                  : Platform.isAndroid
+                      ? 'Android-${Platform.localHostname}'
+                      : Platform.isIOS
+                          ? 'iOS-${Platform.localHostname}'
+                          : 'Unknown-${Platform.localHostname}';
+      await prefs.setString('sync_device_name', deviceName);
+      print('🆕 [DeviceInfo] 生成新设备名称: $deviceName');
+    } else {
+      print('📝 [DeviceInfo] 加载已有设备名称: $deviceName');
+    }
 
     return DeviceInfo(
       deviceId: deviceId,
@@ -83,6 +104,33 @@ class DeviceInfo {
       lastSeen: DateTime.now(),
       isConnected: true,
     );
+  }
+
+  /// 更新设备名称（允许用户自定义设备名称）
+  static Future<void> updateDeviceName(String newName) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('sync_device_name', newName);
+    print('✏️  [DeviceInfo] 更新设备名称: $newName');
+  }
+
+  /// 获取当前保存的设备ID（用于调试）
+  static Future<String?> getSavedDeviceId() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getString('sync_device_id');
+  }
+
+  /// 获取当前保存的设备名称（用于调试）
+  static Future<String?> getSavedDeviceName() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getString('sync_device_name');
+  }
+
+  /// 重置设备信息（仅用于测试或故障排除）
+  static Future<void> resetDeviceInfo() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove('sync_device_id');
+    await prefs.remove('sync_device_name');
+    print('🔄 [DeviceInfo] 已重置设备信息');
   }
 }
 

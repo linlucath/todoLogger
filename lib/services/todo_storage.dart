@@ -78,8 +78,6 @@ class TodoListData {
 class TodoStorage {
   static const String _keyTodoItems = 'todo_items';
   static const String _keyTodoLists = 'todo_lists';
-  static const String _keyIndependentTodos =
-      'independent_todos'; // 不属于任何列表的 TODO
   static const String _keySyncMetadata = 'todo_sync_metadata'; // 同步元数据
 
   // 保存所有 TodoItems（按 ID 存储）
@@ -130,27 +128,14 @@ class TodoStorage {
     return lists;
   }
 
-  // 保存独立 TODOs 的 ID 列表
-  static Future<void> saveIndependentTodoIds(List<String> ids) async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setStringList(_keyIndependentTodos, ids);
-  }
-
-  // 获取独立 TODOs 的 ID 列表
-  static Future<List<String>> getIndependentTodoIds() async {
-    final prefs = await SharedPreferences.getInstance();
-    return prefs.getStringList(_keyIndependentTodos) ?? [];
-  }
-
-  // 清除所有 TODO 数据
+  // 清除所有 To Do 数据
   static Future<void> clearAll() async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove(_keyTodoItems);
     await prefs.remove(_keyTodoLists);
-    await prefs.remove(_keyIndependentTodos);
   }
 
-  // 便捷方法：保存完整的 TODO 数据结构
+  // 便捷方法：保存完整的 To Do 数据结构
   static Future<void> saveAllData({
     required Map<String, TodoItemData> items,
     required List<TodoListData> lists,
@@ -159,22 +144,19 @@ class TodoStorage {
     await Future.wait([
       saveTodoItems(items),
       saveTodoLists(lists),
-      saveIndependentTodoIds(independentTodoIds),
     ]);
   }
 
-  // 便捷方法：获取完整的 TODO 数据结构
+  // 便捷方法：获取完整的 To Do 数据结构
   static Future<Map<String, dynamic>> getAllData() async {
     final results = await Future.wait([
       getTodoItems(),
       getTodoLists(),
-      getIndependentTodoIds(),
     ]);
 
     return {
       'items': results[0] as Map<String, TodoItemData>,
       'lists': results[1] as List<TodoListData>,
-      'independentTodoIds': results[2] as List<String>,
     };
   }
 

@@ -181,52 +181,6 @@ class TimeLoggerStorage {
     return history.toSet();
   }
 
-  // ==================== 数据迁移 ====================
-
-  /// 从旧的 SharedPreferences 迁移到 SQLite
-  static Future<void> migrateFromOldStorage() async {
-    final prefs = await SharedPreferences.getInstance();
-    final migrated = prefs.getBool('migrated_to_sqlite') ?? false;
-
-    if (migrated) return; // 已迁移
-
-    print('🔄 开始数据迁移...');
-
-    try {
-      // 1. 迁移活动记录
-      final oldRecordsJson = prefs.getString('time_logger_all_records');
-      if (oldRecordsJson != null) {
-        final List<dynamic> jsonList = jsonDecode(oldRecordsJson);
-        final oldRecords =
-            jsonList.map((json) => ActivityRecordData.fromJson(json)).toList();
-        for (var record in oldRecords) {
-          await addRecord(record);
-        }
-        print('✅ 迁移 ${oldRecords.length} 条活动记录');
-      }
-
-      // 2. 迁移活动历史
-      final oldHistory = prefs.getStringList('time_logger_activity_history');
-      if (oldHistory != null) {
-        for (var name in oldHistory) {
-          await _db.recordActivityUsage(name);
-        }
-        print('✅ 迁移 ${oldHistory.length} 条活动历史');
-      }
-
-      // 3. 清理旧数据
-      await prefs.remove('time_logger_all_records');
-      await prefs.remove('time_logger_activity_history');
-
-      // 4. 标记已迁移
-      await prefs.setBool('migrated_to_sqlite', true);
-      print('✅ 数据迁移完成!');
-    } catch (e) {
-      print('❌ 数据迁移失败: $e');
-      rethrow;
-    }
-  }
-
   // ==================== 辅助方法 ====================
 
   static ActivityRecordData _mapToRecord(Map<String, dynamic> map) {

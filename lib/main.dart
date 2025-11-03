@@ -74,9 +74,6 @@ void main() async {
         databaseFactory = databaseFactoryFfi;
       }
 
-      // 数据迁移: 从 SharedPreferences 迁移到 SQLite
-      await TimeLoggerStorage.migrateFromOldStorage();
-
       // 初始化同步服务
       syncService = SyncService();
       await syncService.initialize();

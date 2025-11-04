@@ -2,9 +2,21 @@ import 'dart:convert';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'database_service.dart';
 
+/// 生成确定性的活动ID
+/// 基于开始时间和活动名称生成，确保不同设备对同一活动生成相同ID
+String _generateActivityId(DateTime startTime, String activityName) {
+  // 使用时间戳（毫秒）+ 活动名称
+  // 格式：timestamp_activityName
+  final timestamp = startTime.millisecondsSinceEpoch;
+  // 清理活动名称中的特殊字符，只保留字母数字和中文
+  final cleanName = activityName.replaceAll(RegExp(r'[^\w\u4e00-\u9fa5]'), '_');
+  return '${timestamp}_$cleanName';
+}
+
 /// 活动记录数据模型
 class ActivityRecordData {
   final int? id; // 数据库ID，用于更新和删除
+  final String activityId; // 活动的唯一标识符（用于同步）
   final String name;
   final DateTime startTime;
   final DateTime? endTime;
@@ -13,15 +25,17 @@ class ActivityRecordData {
 
   ActivityRecordData({
     this.id,
+    String? activityId,
     required this.name,
     required this.startTime,
     this.endTime,
     this.linkedTodoId,
     this.linkedTodoTitle,
-  });
+  }) : activityId = activityId ?? _generateActivityId(startTime, name);
 
   Map<String, dynamic> toJson() => {
         'id': id,
+        'activityId': activityId,
         'name': name,
         'startTime': startTime.toIso8601String(),
         'endTime': endTime?.toIso8601String(),
@@ -32,6 +46,7 @@ class ActivityRecordData {
   factory ActivityRecordData.fromJson(Map<String, dynamic> json) =>
       ActivityRecordData(
         id: json['id'] as int?,
+        activityId: json['activityId'] as String?,
         name: json['name'] as String,
         startTime: DateTime.parse(json['startTime'] as String),
         endTime: json['endTime'] != null
@@ -44,6 +59,7 @@ class ActivityRecordData {
   // 创建一个副本，支持修改字段
   ActivityRecordData copyWith({
     int? id,
+    String? activityId,
     String? name,
     DateTime? startTime,
     DateTime? endTime,
@@ -53,6 +69,7 @@ class ActivityRecordData {
   }) {
     return ActivityRecordData(
       id: id ?? this.id,
+      activityId: activityId ?? this.activityId,
       name: name ?? this.name,
       startTime: startTime ?? this.startTime,
       endTime: endTime ?? this.endTime,

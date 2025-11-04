@@ -64,7 +64,9 @@ class _EditRecordDialogState extends State<EditRecordDialog> {
     if (date == null || !mounted) return;
 
     // 选择时间
+    if (!mounted) return;
     final time = await showTimePicker(
+      // ignore: use_build_context_synchronously
       context: context,
       initialTime: TimeOfDay.fromDateTime(initialDate),
     );

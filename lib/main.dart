@@ -10,8 +10,6 @@ import 'pages/target/target.dart';
 import 'pages/statistics/statistics.dart';
 import 'pages/sync/sync_settings.dart';
 import 'widgets/custom_title_bar.dart';
-import 'utils/performance_monitor.dart';
-import 'services/time_logger_storage.dart';
 import 'services/sync_service.dart';
 import 'services/notification_service.dart';
 
@@ -40,10 +38,6 @@ void main() async {
         debugPrint('堆栈跟踪: $stack');
         return true; // 表示错误已处理
       };
-
-      // 性能监控: 记录启动时间
-      final monitor = PerformanceMonitor();
-      monitor.recordAppStart();
 
       // 确保 Flutter 绑定初始化
       WidgetsFlutterBinding.ensureInitialized();
@@ -85,15 +79,6 @@ void main() async {
       }
 
       runApp(const MyApp());
-
-      // 性能监控: 记录首帧时间
-      monitor.recordFirstFrame();
-      monitor.startFpsMonitoring();
-
-      // 5 秒后打印性能报告
-      Future.delayed(const Duration(seconds: 5), () {
-        monitor.printReport();
-      });
     },
     (error, stack) {
       // 🆕 捕获所有未处理的错误
@@ -223,14 +208,14 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver {
     Widget page;
     switch (index) {
       case 0:
-        page = const TodoPage();
+        page = TodoPage(syncService: syncService); // 🆕 传递 syncService
         break;
       case 1:
         // TimeLoggerPage 使用 GlobalKey 以便访问其状态
         page = TimeLoggerPage(key: _timeLoggerKey, syncService: syncService);
         break;
       case 2:
-        page = const TargetPage();
+        page = TargetPage(syncService: syncService); // 🆕 传递 syncService
         break;
       case 3:
         page = const StatisticsPage();
@@ -239,7 +224,7 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver {
         page = SyncSettingsPage(syncService: syncService);
         break;
       default:
-        page = const TodoPage();
+        page = TodoPage(syncService: syncService); // 🆕 传递 syncService
     }
 
     _pageCache[index] = page;

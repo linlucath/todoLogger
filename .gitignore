@@ -50,3 +50,7 @@ app.*.map.json
 
 # Envrionment
 .vscode/
+
+# personal script
+*.ps1
+*.py

@@ -11,8 +11,20 @@ import './start_record_dialog.dart';
 import './edit_activity_dialog.dart'; // 🆕 导入编辑对话框
 import './notification_settings_dialog.dart'; // 🆕 导入通知设置对话框
 
+/// 生成确定性的活动ID
+/// 基于开始时间和活动名称生成，确保不同设备对同一活动生成相同ID
+String _generateActivityId(DateTime startTime, String activityName) {
+  // 使用时间戳（毫秒）+ 活动名称
+  // 格式：timestamp_activityName
+  final timestamp = startTime.millisecondsSinceEpoch;
+  // 清理活动名称中的特殊字符，只保留字母数字和中文
+  final cleanName = activityName.replaceAll(RegExp(r'[^\w\u4e00-\u9fa5]'), '_');
+  return '${timestamp}_$cleanName';
+}
+
 // 记录数据类
 class ActivityRecord {
+  final String activityId; // 活动的唯一标识符
   String name; // 改为可变，支持编辑
   final DateTime startTime;
   DateTime? endTime;
@@ -21,12 +33,13 @@ class ActivityRecord {
 
   // 数据类构造函数
   ActivityRecord({
+    String? activityId,
     required this.name,
     required this.startTime,
     this.endTime,
     this.linkedTodoId,
     this.linkedTodoTitle,
-  });
+  }) : activityId = activityId ?? _generateActivityId(startTime, name);
 
   int get durationSeconds {
     final end = endTime ?? DateTime.now();
@@ -99,20 +112,30 @@ class _TimeLoggerPageState extends State<TimeLoggerPage> {
     try {
       final currentActivity = await TimeLoggerStorage.getCurrentActivity();
 
-      if (!mounted) return;
+      print('📂 [TimeLogger] 从存储加载的活动: ${currentActivity?.name ?? "null"}');
+      print('📂 [TimeLogger] 当前UI显示的活动: ${_currentActivity?.name ?? "null"}');
+
+      if (!mounted) {
+        print('⚠️  [TimeLogger] 组件已卸载，跳过更新');
+        return;
+      }
 
       setState(() {
         if (currentActivity != null) {
           // 检查是否需要更新当前活动
-          if (_currentActivity == null ||
+          final needsUpdate = _currentActivity == null ||
               _currentActivity!.startTime != currentActivity.startTime ||
-              _currentActivity!.name != currentActivity.name) {
+              _currentActivity!.name != currentActivity.name;
+
+          if (needsUpdate) {
             print('🔄 [TimeLogger] 更新当前活动: ${currentActivity.name}');
+            print('   开始时间: ${currentActivity.startTime}');
 
             // 停止旧的计时器
             _timer?.cancel();
 
             _currentActivity = ActivityRecord(
+              activityId: currentActivity.activityId,
               name: currentActivity.name,
               startTime: currentActivity.startTime,
               endTime: currentActivity.endTime,
@@ -127,17 +150,26 @@ class _TimeLoggerPageState extends State<TimeLoggerPage> {
                 setState(() {});
               }
             });
+
+            print('✅ [TimeLogger] 活动更新完成，计时器已启动');
+          } else {
+            print('✅ [TimeLogger] 活动相同，无需更新');
           }
         } else {
           // 当前活动被清除（可能被远程设备结束）
           if (_currentActivity != null) {
-            print('⏹️  [TimeLogger] 当前活动已被结束');
+            print('⏹️  [TimeLogger] 当前活动已被结束，停止计时');
             _timer?.cancel();
             _currentActivity = null;
             _isRecording = false;
+            print('✅ [TimeLogger] 已停止计时并清除活动');
+          } else {
+            print('✅ [TimeLogger] 当前无活动，保持空闲状态');
           }
         }
       });
+
+      print('✅ [TimeLogger] 重新加载完成');
     } catch (e) {
       print('❌ [TimeLogger] 重新加载当前活动失败: $e');
     }
@@ -153,6 +185,7 @@ class _TimeLoggerPageState extends State<TimeLoggerPage> {
       setState(() {
         if (currentActivity != null) {
           _currentActivity = ActivityRecord(
+            activityId: currentActivity.activityId,
             name: currentActivity.name,
             startTime: currentActivity.startTime,
             endTime: currentActivity.endTime,
@@ -181,6 +214,7 @@ class _TimeLoggerPageState extends State<TimeLoggerPage> {
     // 保存当前活动状态
     if (_currentActivity != null) {
       await TimeLoggerStorage.saveCurrentActivity(ActivityRecordData(
+        activityId: _currentActivity!.activityId,
         name: _currentActivity!.name,
         startTime: _currentActivity!.startTime,
         endTime: _currentActivity!.endTime,
@@ -237,9 +271,11 @@ class _TimeLoggerPageState extends State<TimeLoggerPage> {
   void _startRecording(String activityName,
       {String? todoId, String? todoTitle}) {
     final now = DateTime.now();
+    final activityId = _generateActivityId(now, activityName); // 基于时间和名称生成确定性ID
 
     setState(() {
       _currentActivity = ActivityRecord(
+        activityId: activityId,
         name: activityName,
         startTime: now,
         linkedTodoId: todoId,
@@ -256,11 +292,24 @@ class _TimeLoggerPageState extends State<TimeLoggerPage> {
     // 保存状态
     _saveCurrentState();
 
-    // 每秒更新界面以刷新时间显示
+    // 广播计时开始（使用稳定的activityId）
+    if (widget.syncService != null) {
+      widget.syncService!.broadcastTimerStart(
+        activityId,
+        activityName,
+        now,
+        todoId,
+        todoTitle,
+      );
+    }
+
+    // 每秒更新界面（各设备根据收到的开始时间独立计时）
     _timer = Timer.periodic(const Duration(seconds: 1), (timer) {
-      setState(() {
-        // 不需要递增变量，直接通过 getter 计算实际时间差
-      });
+      if (_currentActivity != null) {
+        setState(() {
+          // 通过 getter 计算实际时间差
+        });
+      }
     });
   }
 
@@ -270,6 +319,8 @@ class _TimeLoggerPageState extends State<TimeLoggerPage> {
     // 暂停计时器
     _timer?.cancel();
 
+    final endedActivity = _currentActivity!;
+
     // 结束当前活动
     setState(() {
       _currentActivity!.endTime = DateTime.now();
@@ -278,12 +329,25 @@ class _TimeLoggerPageState extends State<TimeLoggerPage> {
 
     // 立即保存已完成的活动记录到数据库
     await TimeLoggerStorage.addRecord(ActivityRecordData(
+      activityId: _currentActivity!.activityId,
       name: _currentActivity!.name,
       startTime: _currentActivity!.startTime,
       endTime: _currentActivity!.endTime,
       linkedTodoId: _currentActivity!.linkedTodoId,
       linkedTodoTitle: _currentActivity!.linkedTodoTitle,
     ));
+
+    // 广播计时停止（使用稳定的activityId）
+    if (widget.syncService != null && endedActivity.endTime != null) {
+      final duration =
+          endedActivity.endTime!.difference(endedActivity.startTime).inSeconds;
+      widget.syncService!.broadcastTimerStop(
+        endedActivity.activityId,
+        endedActivity.startTime,
+        endedActivity.endTime!,
+        duration,
+      );
+    }
 
     // 弹出对话框：接下来做什么
     final result = await _showNextActivityDialog();

@@ -9,18 +9,26 @@ abstract class SyncableData {
   SyncMetadata get syncMetadata;
 }
 
-/// 同步元数据 - 用于冲突检测和解决
+/// 同步元数据 - 用于冲突检测和解决（Git-style 三方合并）
 class SyncMetadata {
   final DateTime lastModifiedAt; // 最后修改时间
   final String lastModifiedBy; // 最后修改的设备ID
   final int version; // 版本号
   final bool isDeleted; // 是否已删除
 
+  // 🆕 Git-style 共同祖先跟踪
+  final DateTime? baseModifiedAt; // 上次同步时的修改时间（共同祖先）
+  final int? baseVersion; // 上次同步时的版本号（共同祖先）
+  final String? baseModifiedBy; // 上次同步时的修改者
+
   SyncMetadata({
     required this.lastModifiedAt,
     required this.lastModifiedBy,
     this.version = 1,
     this.isDeleted = false,
+    this.baseModifiedAt,
+    this.baseVersion,
+    this.baseModifiedBy,
   });
 
   Map<String, dynamic> toJson() => {
@@ -28,6 +36,9 @@ class SyncMetadata {
         'lastModifiedBy': lastModifiedBy,
         'version': version,
         'isDeleted': isDeleted,
+        'baseModifiedAt': baseModifiedAt?.toIso8601String(),
+        'baseVersion': baseVersion,
+        'baseModifiedBy': baseModifiedBy,
       };
 
   factory SyncMetadata.fromJson(Map<String, dynamic> json) => SyncMetadata(
@@ -35,6 +46,11 @@ class SyncMetadata {
         lastModifiedBy: json['lastModifiedBy'] as String,
         version: json['version'] as int? ?? 1,
         isDeleted: json['isDeleted'] as bool? ?? false,
+        baseModifiedAt: json['baseModifiedAt'] != null
+            ? DateTime.parse(json['baseModifiedAt'] as String)
+            : null,
+        baseVersion: json['baseVersion'] as int?,
+        baseModifiedBy: json['baseModifiedBy'] as String?,
       );
 
   SyncMetadata copyWith({
@@ -42,12 +58,18 @@ class SyncMetadata {
     String? lastModifiedBy,
     int? version,
     bool? isDeleted,
+    DateTime? baseModifiedAt,
+    int? baseVersion,
+    String? baseModifiedBy,
   }) {
     return SyncMetadata(
       lastModifiedAt: lastModifiedAt ?? this.lastModifiedAt,
       lastModifiedBy: lastModifiedBy ?? this.lastModifiedBy,
       version: version ?? this.version,
       isDeleted: isDeleted ?? this.isDeleted,
+      baseModifiedAt: baseModifiedAt ?? this.baseModifiedAt,
+      baseVersion: baseVersion ?? this.baseVersion,
+      baseModifiedBy: baseModifiedBy ?? this.baseModifiedBy,
     );
   }
 
@@ -68,6 +90,10 @@ class SyncMetadata {
       lastModifiedBy: deviceId,
       version: version + 1,
       isDeleted: false,
+      // 保留当前的 base 信息
+      baseModifiedAt: baseModifiedAt,
+      baseVersion: baseVersion,
+      baseModifiedBy: baseModifiedBy,
     );
   }
 
@@ -78,6 +104,23 @@ class SyncMetadata {
       lastModifiedBy: deviceId,
       version: version + 1,
       isDeleted: true,
+      baseModifiedAt: baseModifiedAt,
+      baseVersion: baseVersion,
+      baseModifiedBy: baseModifiedBy,
+    );
+  }
+
+  /// 🆕 同步后更新 base（记录共同祖先）
+  SyncMetadata updateBase() {
+    return SyncMetadata(
+      lastModifiedAt: lastModifiedAt,
+      lastModifiedBy: lastModifiedBy,
+      version: version,
+      isDeleted: isDeleted,
+      // 当前状态作为新的 base
+      baseModifiedAt: lastModifiedAt,
+      baseVersion: version,
+      baseModifiedBy: lastModifiedBy,
     );
   }
 }
@@ -206,7 +249,8 @@ class SyncableTodoList implements SyncableData {
 
 /// 带同步元数据的时间日志
 class SyncableTimeLog implements SyncableData {
-  final String id; // 添加唯一ID
+  final String id; // 数据库ID
+  final String activityId; // 活动计时器的唯一标识符（用于跨设备同步）
   final String name;
   final DateTime startTime;
   final DateTime? endTime;
@@ -217,6 +261,7 @@ class SyncableTimeLog implements SyncableData {
 
   SyncableTimeLog({
     required this.id,
+    required this.activityId,
     required this.name,
     required this.startTime,
     this.endTime,
@@ -227,6 +272,7 @@ class SyncableTimeLog implements SyncableData {
 
   Map<String, dynamic> toJson() => {
         'id': id,
+        'activityId': activityId, // 🆕 包含activityId
         'name': name,
         'startTime': startTime.toIso8601String(),
         'endTime': endTime?.toIso8601String(),
@@ -238,6 +284,7 @@ class SyncableTimeLog implements SyncableData {
   factory SyncableTimeLog.fromJson(Map<String, dynamic> json) =>
       SyncableTimeLog(
         id: json['id'] as String,
+        activityId: json['activityId'] as String, // 🆕 从JSON读取activityId
         name: json['name'] as String,
         startTime: DateTime.parse(json['startTime'] as String),
         endTime: json['endTime'] != null
@@ -251,6 +298,7 @@ class SyncableTimeLog implements SyncableData {
 
   SyncableTimeLog copyWith({
     String? id,
+    String? activityId, // 🆕 添加activityId参数
     String? name,
     DateTime? startTime,
     DateTime? endTime,
@@ -260,6 +308,7 @@ class SyncableTimeLog implements SyncableData {
   }) {
     return SyncableTimeLog(
       id: id ?? this.id,
+      activityId: activityId ?? this.activityId, // 🆕 使用activityId
       name: name ?? this.name,
       startTime: startTime ?? this.startTime,
       endTime: endTime ?? this.endTime,

@@ -100,7 +100,7 @@ class _SyncSettingsPageState extends State<SyncSettingsPage> {
             Switch(
               value: widget.syncService.isEnabled,
               onChanged: _isLoading ? null : _toggleSync,
-              activeColor: const Color(0xFF6C63FF),
+              activeTrackColor: const Color(0xFF6C63FF),
             ),
           ],
         ),
@@ -331,12 +331,45 @@ class _SyncSettingsPageState extends State<SyncSettingsPage> {
           ],
         ),
         const SizedBox(height: 12),
+        // === 计时器同步 Step 6: UI 监听并显示远程计时器 ===
+        // StreamBuilder 是 Flutter 的响应式 UI 组件
+        // 它会自动监听 activeTimersStream 的变化并重建 UI
         StreamBuilder<List<TimerState>>(
+          // stream: 指定要监听的数据流
           stream: widget.syncService.activeTimersStream,
+          // initialData: 初始数据，避免首次加载时显示空状态
           initialData: widget.syncService.activeTimers,
+          // builder: 根据 Stream 数据构建 UI
           builder: (context, snapshot) {
-            final timers = snapshot.data ?? [];
-            if (timers.isEmpty) {
+            // 🆕 添加调试日志
+            print('🖥️  [UI] StreamBuilder 收到更新');
+            print('   hasData: ${snapshot.hasData}');
+            print('   hasError: ${snapshot.hasError}');
+            print('   connectionState: ${snapshot.connectionState}');
+
+            // 从 snapshot 获取所有计时器数据
+            final allTimers = snapshot.data ?? [];
+            print('   所有计时器数量: ${allTimers.length}');
+
+            // 🔍 获取当前设备ID
+            final currentDeviceId = widget.syncService.currentDevice?.deviceId;
+            print('   当前设备ID: $currentDeviceId');
+
+            // === 关键过滤逻辑：只显示其他设备的计时器 ===
+            // 问题：allTimers 包含所有设备的计时器（包括本地）
+            // 过滤远程计时器
+            final remoteTimers = allTimers.where((timer) {
+              final isRemote = timer.deviceId != currentDeviceId;
+              print(
+                  '   计时器 "${timer.activityName}" (ID: ${timer.deviceId}): ${isRemote ? "远程" : "本地"}');
+              return isRemote;
+            }).toList();
+
+            print('   过滤后的远程计时器数量: ${remoteTimers.length}');
+
+            // 如果没有远程计时器，显示空状态
+            if (remoteTimers.isEmpty) {
+              print('   显示: 暂无活动的计时');
               return Card(
                 child: Padding(
                   padding: const EdgeInsets.all(16),
@@ -350,8 +383,11 @@ class _SyncSettingsPageState extends State<SyncSettingsPage> {
               );
             }
 
+            // 显示所有远程计时器
+            print('   显示 ${remoteTimers.length} 个远程计时器');
             return Column(
-              children: timers.map((timer) => _buildTimerCard(timer)).toList(),
+              children:
+                  remoteTimers.map((timer) => _buildTimerCard(timer)).toList(),
             );
           },
         ),
@@ -371,7 +407,7 @@ class _SyncSettingsPageState extends State<SyncSettingsPage> {
       child: ListTile(
         leading: const Icon(Icons.timer, color: Color(0xFF6C63FF)),
         title: Text(
-          timer.todoTitle,
+          timer.linkedTodoTitle ?? timer.activityName,
           style: const TextStyle(fontWeight: FontWeight.w500),
         ),
         subtitle: Text('来自: ${timer.deviceName}'),
@@ -477,6 +513,11 @@ class _SyncSettingsPageState extends State<SyncSettingsPage> {
 
   /// 同步所有数据到设备
   Future<void> _syncAllToDevice(DeviceInfo device) async {
+    print('🔘 [UI] 用户点击同步按钮');
+    print('   设备: ${device.deviceName}');
+    print('   设备ID: ${device.deviceId}');
+    print('   设备IP: ${device.ipAddress}');
+
     showDialog(
       context: context,
       barrierDismissible: false,
@@ -494,8 +535,11 @@ class _SyncSettingsPageState extends State<SyncSettingsPage> {
     );
 
     try {
+      print('📞 [UI] 调用 syncAllDataToDevice...');
       final success =
           await widget.syncService.syncAllDataToDevice(device.deviceId);
+      print('✅ [UI] syncAllDataToDevice 完成: $success');
+
       if (mounted) {
         Navigator.pop(context);
         ScaffoldMessenger.of(context).showSnackBar(
@@ -506,6 +550,8 @@ class _SyncSettingsPageState extends State<SyncSettingsPage> {
         );
       }
     } catch (e) {
+      print('❌ [UI] 同步异常: $e');
+      print('   堆栈: ${StackTrace.current}');
       if (mounted) {
         Navigator.pop(context);
         ScaffoldMessenger.of(context).showSnackBar(

@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:uuid/uuid.dart';
 import '../models/sync_models.dart';
 import '../models/sync_data_models.dart';
 import '../models/sync_error.dart';
@@ -9,7 +10,7 @@ import '../utils/sync_lock.dart';
 import 'device_discovery_service.dart';
 import 'sync_server_service.dart';
 import 'sync_client_service.dart';
-import 'sync_conflict_resolver.dart';
+import 'git_style_merger.dart'; // 🆕 Git-style 合并器
 import 'sync_history_service.dart';
 import 'todo_storage.dart';
 import 'time_logger_storage.dart';
@@ -22,7 +23,8 @@ class SyncService {
   final DeviceDiscoveryService _discoveryService = DeviceDiscoveryService();
   final SyncServerService _serverService = SyncServerService();
   final Map<String, SyncClientService> _clientServices = {};
-  final SyncConflictResolver _conflictResolver = SyncConflictResolver();
+  final GitStyleMerger _gitMerger = GitStyleMerger(
+      conflictStrategy: ConflictStrategy.lastWrite); // 🆕 Git-style 合并器
   final SyncHistoryService _historyService = SyncHistoryService();
 
   // 当前设备信息
@@ -65,8 +67,26 @@ class SyncService {
   static const int _maxPerformanceMetricsAge = 7; // 保留最近7天的性能指标
   static const int _maxSyncQueueSize = 50; // 最大队列大小
 
+  // 🆕 活动计时器更新定时器
+  Timer? _activeTimersUpdateTimer;
+  static const Duration _activeTimersUpdateInterval = Duration(seconds: 1);
+
   // 当前计时状态
   final Map<String, TimerState> _activeTimers = {};
+  // 🆕 计时器Map的互斥标志，防止并发修改
+  bool _isUpdatingActiveTimers = false;
+
+  // 🆕 设备断连延迟移除（防止快速重连导致计时器丢失）
+  final Map<String, Timer> _deviceDisconnectTimers = {};
+  static const Duration _deviceRemovalDelay = Duration(seconds: 5);
+
+  // 🆕 冲突解决锁（防止并发冲突解决）
+  bool _isResolvingConflicts = false;
+
+  // 🆕 同步会话跟踪（防止循环同步）
+  final Set<String> _processedSyncSessions = {};
+  static const int _maxSyncSessionsToTrack = 100; // 最多跟踪100个会话
+  String? _currentOutgoingSyncSession; // 当前发起的同步会话ID
 
   // 事件流控制器
   final StreamController<List<DeviceInfo>> _discoveredDevicesController =
@@ -142,6 +162,12 @@ class SyncService {
 
     // 🆕 启动内存清理
     _startMemoryCleanup();
+
+    // 🆕 加载本地活动计时器
+    await _loadLocalActiveTimer();
+
+    // 🆕 启动活动计时器更新
+    _startActiveTimersUpdate();
   }
 
   /// 禁用同步
@@ -161,6 +187,9 @@ class SyncService {
     // 🆕 停止内存清理
     _stopMemoryCleanup();
 
+    // 🆕 停止活动计时器更新
+    _stopActiveTimersUpdate();
+
     // 停止所有客户端连接
     await _disconnectAllClients();
 
@@ -177,13 +206,21 @@ class SyncService {
 
   /// 启动服务器
   Future<void> _startServer() async {
-    if (_isServerRunning || _currentDevice == null) return;
+    if (_isServerRunning || _currentDevice == null) {
+      print('⚠️  [SyncService] 无法启动服务器');
+      print('   _isServerRunning: $_isServerRunning');
+      print('   _currentDevice: ${_currentDevice?.deviceName ?? "null"}');
+      return;
+    }
 
     print('🌐 [SyncService] 启动服务器');
+    print('   当前设备: ${_currentDevice!.deviceName}');
+    print('   端口: ${_currentDevice!.port}');
 
     final success = await _serverService.start(_currentDevice!);
     if (success) {
       _isServerRunning = true;
+      print('✅ [SyncService] 服务器启动成功');
 
       // 更新当前设备的实际端口（可能使用了备用端口）
       final actualPort = _serverService.port;
@@ -197,9 +234,13 @@ class SyncService {
       }
 
       // 设置消息处理回调
+      print('🔧 [SyncService] 设置服务器回调函数');
       _serverService.onMessageReceived = _handleServerMessage;
       _serverService.onDeviceConnected = _handleDeviceConnected;
       _serverService.onDeviceDisconnected = _handleDeviceDisconnected;
+      print('✅ [SyncService] 服务器回调设置完成');
+    } else {
+      print('❌ [SyncService] 服务器启动失败');
     }
   }
 
@@ -248,10 +289,34 @@ class SyncService {
     await prefs.setBool('sync_enabled', _isEnabled);
   }
 
+  // ==================== 计时器同步 Step 3: 接收并路由消息 ====================
+
   /// 处理服务器收到的消息
+  ///
+  /// 当其他设备发送消息到本设备时，这个函数负责：
+  /// 1. 验证消息来源（防止处理自己发送的消息）
+  /// 2. 根据消息类型路由到对应的处理函数
+  ///
+  /// 对于计时器相关的消息类型：
+  /// - timerStart: 其他设备启动了计时器
+  /// - timerStop: 其他设备停止了计时器
+  /// - timerUpdate: 其他设备的计时器时间更新
+  /// - timerForceStop: 冲突解决时强制停止本地计时器
   void _handleServerMessage(SyncMessage message, String fromDeviceId) {
     print('📨 [SyncService] 处理消息: ${message.type} from $fromDeviceId');
+    print('   senderId: ${message.senderId}');
+    print('   currentDeviceId: ${_currentDevice?.deviceId}');
 
+    // 🔍 关键检查：忽略来自自己的消息（防止广播回环）
+    // 原因：当本设备广播消息时，如果本设备也运行着服务器，
+    // 可能会收到自己发出的消息，需要过滤掉
+    if (message.senderId != null &&
+        message.senderId == _currentDevice?.deviceId) {
+      print('⏭️  [SyncService] 忽略来自自己的消息 (广播回环)');
+      return;
+    }
+
+    // === 消息路由：根据消息类型调用对应的处理函数 ===
     switch (message.type) {
       case SyncMessageType.dataRequest:
         _handleDataRequest(message, fromDeviceId);
@@ -260,6 +325,7 @@ class SyncService {
         _handleDataUpdate(message);
         break;
       case SyncMessageType.timerStart:
+        // 🎯 计时器启动消息 - 转到 _handleTimerStart 处理
         _handleTimerStart(message);
         break;
       case SyncMessageType.timerStop:
@@ -278,9 +344,24 @@ class SyncService {
 
   /// 处理设备连接
   void _handleDeviceConnected(String deviceId, DeviceInfo device) {
-    print('🤝 [SyncService] 设备已连接: ${device.deviceName}');
+    print('🤝 [SyncService] 设备已连接');
+    print('   设备ID: $deviceId');
+    print('   设备名: ${device.deviceName}');
+    print('   设备IP: ${device.ipAddress}');
+    print('   设备端口: ${device.port}');
+
     _connectedDevicesMap[deviceId] = device;
+    print('   已连接设备总数: ${_connectedDevicesMap.length}');
+
     _notifyConnectedDevicesChanged();
+    print('✅ [SyncService] 设备连接处理完成');
+
+    // 🆕 设备连接后，立即同步当前计时器状态
+    // 使用 Future.microtask 避免在回调中直接执行异步操作
+    Future.microtask(() async {
+      print('🔄 [SyncService] 检查并同步当前计时状态...');
+      await _syncCurrentTimerState(deviceId);
+    });
   }
 
   /// 处理设备断开
@@ -288,6 +369,25 @@ class SyncService {
     print('👋 [SyncService] 设备已断开: $deviceId');
     _connectedDevicesMap.remove(deviceId);
     _notifyConnectedDevicesChanged();
+
+    // 🆕 延迟移除该设备的活动计时器（给重连留时间）
+    if (_activeTimers.containsKey(deviceId)) {
+      print(
+          '⏳ [SyncService] 将在${_deviceRemovalDelay.inSeconds}秒后移除设备计时器: $deviceId');
+
+      // 取消之前的延迟定时器（如果存在）
+      _deviceDisconnectTimers[deviceId]?.cancel();
+
+      // 创建新的延迟定时器
+      _deviceDisconnectTimers[deviceId] = Timer(_deviceRemovalDelay, () {
+        if (_activeTimers.containsKey(deviceId)) {
+          _activeTimers.remove(deviceId);
+          _notifyActiveTimersChanged();
+          print('🗑️  [SyncService] 已清理长时间断连设备的计时器: $deviceId');
+        }
+        _deviceDisconnectTimers.remove(deviceId);
+      });
+    }
   }
 
   /// 处理数据请求
@@ -334,6 +434,8 @@ class SyncService {
 
   /// 处理数据更新
   void _handleDataUpdate(SyncMessage message) {
+    print('📥 [SyncService] 开始处理数据更新消息');
+
     if (message.data == null) {
       print('⚠️  [SyncService] 数据更新消息缺少data字段');
       return;
@@ -341,6 +443,9 @@ class SyncService {
 
     final dataType = message.data!['dataType'];
     final updateData = message.data!['data'];
+
+    print('📊 [SyncService] 数据类型: $dataType');
+    print('📦 [SyncService] 数据大小: ${updateData.toString().length} 字符');
 
     if (dataType == null || dataType is! String) {
       print('⚠️  [SyncService] 数据更新消息dataType无效');
@@ -354,9 +459,73 @@ class SyncService {
 
     print('🔄 [SyncService] 处理数据更新: $dataType from ${message.senderId}');
 
-    // 验证数据完整性
-    if (!_validateSyncData(updateData, dataType)) {
+    // 🆕 先解压数据（如果需要），然后再验证
+    dynamic actualData = updateData;
+
+    // 检查是否为压缩数据（todos 使用 compressJson 格式）
+    if (dataType == 'todos' && updateData is Map<String, dynamic>) {
+      if (updateData.containsKey('compressed')) {
+        print('🔄 [SyncService] 检测到压缩数据，开始解压...');
+        final decompressed = SyncCompression.decompressJson(updateData);
+        if (decompressed == null) {
+          print('❌ [SyncService] 数据解压失败');
+          _handleError(SyncError(
+            type: SyncErrorType.dataCorrupted,
+            message: '数据解压失败',
+            details: '数据类型: $dataType, 来源: ${message.senderId}',
+            isRecoverable: false,
+          ));
+          return;
+        }
+        actualData = decompressed;
+        print('✅ [SyncService] 数据解压成功');
+      }
+    }
+    // 检查是否为压缩数据（timeLogs 使用 compressBatch 格式）
+    else if (dataType == 'timeLogs' && updateData is Map<String, dynamic>) {
+      if (updateData.containsKey('compressed')) {
+        print('🔄 [SyncService] 检测到压缩数据，开始解压...');
+        final decompressed = SyncCompression.decompressBatch(updateData);
+        if (decompressed == null) {
+          print('❌ [SyncService] 数据解压失败');
+          _handleError(SyncError(
+            type: SyncErrorType.dataCorrupted,
+            message: '数据解压失败',
+            details: '数据类型: $dataType, 来源: ${message.senderId}',
+            isRecoverable: false,
+          ));
+          return;
+        }
+        actualData = decompressed;
+        print('✅ [SyncService] 数据解压成功');
+      }
+    }
+    // 🆕 检查是否为压缩数据（targets 使用 compressJson 格式，与todos一致）
+    else if (dataType == 'targets' && updateData is Map<String, dynamic>) {
+      if (updateData.containsKey('compressed')) {
+        print('🔄 [SyncService] 检测到压缩数据，开始解压...');
+        final decompressed = SyncCompression.decompressJson(updateData);
+        if (decompressed == null) {
+          print('❌ [SyncService] 目标数据解压失败');
+          _handleError(SyncError(
+            type: SyncErrorType.dataCorrupted,
+            message: '目标数据解压失败',
+            details: '数据类型: $dataType, 来源: ${message.senderId}',
+            isRecoverable: false,
+          ));
+          return;
+        }
+        actualData = decompressed;
+        print('✅ [SyncService] 目标数据解压成功');
+      }
+    }
+
+    // 验证数据完整性（使用解压后的数据）
+    if (!_validateSyncData(actualData, dataType)) {
       print('❌ [SyncService] 数据校验失败，拒绝更新');
+      print('❌ [SyncService] 数据类型: $dataType');
+      print(
+          '❌ [SyncService] 数据内容: ${actualData.toString().substring(0, actualData.toString().length > 200 ? 200 : actualData.toString().length)}...');
       _handleError(SyncError(
         type: SyncErrorType.unknown,
         message: '接收到的数据格式不正确',
@@ -366,93 +535,264 @@ class SyncService {
       return;
     }
 
-    // 根据数据类型处理更新
+    print('✅ [SyncService] 数据验证通过: $dataType');
+
+    // 🆕 检查同步会话ID，防止循环同步
+    if (message.syncSessionId != null) {
+      // 如果是我们自己发起的同步会话，忽略
+      if (message.syncSessionId == _currentOutgoingSyncSession) {
+        print('ℹ️  [SyncService] 忽略自己发起的同步会话: ${message.syncSessionId}');
+        return;
+      }
+
+      // 如果已经处理过这个会话，忽略
+      if (_processedSyncSessions.contains(message.syncSessionId!)) {
+        print('ℹ️  [SyncService] 已处理过的同步会话: ${message.syncSessionId}');
+        return;
+      }
+
+      // 记录这个会话
+      _processedSyncSessions.add(message.syncSessionId!);
+
+      // 限制跟踪的会话数量
+      if (_processedSyncSessions.length > _maxSyncSessionsToTrack) {
+        // 移除最旧的会话（简单实现：清空一半）
+        final toRemove =
+            _processedSyncSessions.take(_maxSyncSessionsToTrack ~/ 2).toList();
+        _processedSyncSessions.removeAll(toRemove);
+      }
+    }
+
+    // 根据数据类型处理更新（传递解压后的数据）
+    print('🔀 [SyncService] 路由数据更新到处理器: $dataType');
     switch (dataType) {
       case 'todos':
-        _handleTodosDataUpdate(
-            updateData as Map<String, dynamic>, message.senderId!);
+        _handleTodosDataUpdate(actualData as Map<String, dynamic>,
+            message.senderId!, message.syncSessionId);
         break;
       case 'timeLogs':
         _handleTimeLogsDataUpdate(
-            updateData as List<dynamic>, message.senderId!);
+            actualData as List<dynamic>, message.senderId!);
         break;
       case 'targets':
+        print('➡️  [SyncService] 调用 _handleTargetsDataUpdate');
         _handleTargetsDataUpdate(
-            updateData as List<dynamic>, message.senderId!);
+            actualData, message.senderId!, message.syncSessionId);
         break;
       default:
         print('⚠️  [SyncService] 未知数据类型: $dataType');
     }
   }
 
-  /// 处理计时开始
-  void _handleTimerStart(SyncMessage message) {
+  // ==================== 计时器同步 Step 4: 处理接收到的计时开始消息 ====================
+
+  /// 处理计时开始消息
+  ///
+  /// 当收到其他设备发送的计时开始消息时：
+  /// 处理计时开始消息
+  Future<void> _handleTimerStart(SyncMessage message) async {
+    // 验证消息
     if (message.data == null || message.senderId == null) {
+      print('⚠️  [SyncService] 计时开始消息无效');
+      return;
+    }
+
+    // 防止处理自己发送的消息
+    if (message.senderId == _currentDevice?.deviceId) {
+      print('⏭️  [SyncService] 忽略来自自己的计时开始消息');
+      return;
+    }
+
+    // 提取数据
+    final activityId = message.data!['activityId'] as String?;
+    final activityName = message.data!['activityName'] as String?;
+    final startTimeStr = message.data!['startTime'] as String?;
+    final linkedTodoId = message.data!['linkedTodoId'] as String?;
+    final linkedTodoTitle = message.data!['linkedTodoTitle'] as String?;
+
+    if (activityId == null || activityName == null || startTimeStr == null) {
       print('⚠️  [SyncService] 计时开始消息缺少必要字段');
+      print('   activityId: $activityId');
+      print('   activityName: $activityName');
+      print('   startTime: $startTimeStr');
       return;
     }
 
-    final todoId = message.data!['todoId'];
-    final startTimeStr = message.data!['startTime'];
-
-    if (todoId == null || todoId is! String) {
-      print('⚠️  [SyncService] 计时开始消息todoId无效');
-      return;
-    }
-
-    if (startTimeStr == null || startTimeStr is! String) {
-      print('⚠️  [SyncService] 计时开始消息startTime无效');
-      return;
-    }
+    print('📥 [SyncService] 收到计时开始消息');
+    print('   发送者设备: ${message.senderId}');
+    print('   activityId: $activityId');
+    print('   activityName: $activityName');
+    print('   startTime: $startTimeStr');
 
     final startTime = DateTime.parse(startTimeStr);
-    final senderDevice = _serverService.getConnectedDevice(message.senderId!);
 
-    if (senderDevice != null) {
-      final timerState = TimerState(
-        todoId: todoId,
-        todoTitle: message.data!['todoTitle'] as String? ?? 'Unknown',
-        startTime: startTime,
-        currentDuration: 0,
-        deviceId: message.senderId!,
-        deviceName: senderDevice.deviceName,
-      );
-
-      _activeTimers[message.senderId!] = timerState;
-      _notifyActiveTimersChanged();
-
-      print(
-          '⏱️  [SyncService] 计时开始: ${timerState.todoTitle} on ${senderDevice.deviceName}');
+    // 🆕 检查该设备是否已有活动计时器
+    final existingTimer = _activeTimers[message.senderId];
+    if (existingTimer != null) {
+      // 检查是否是同一个活动（可能是重新连接后的同步）
+      if (existingTimer.activityId == activityId) {
+        print('ℹ️  [SyncService] 该设备已有相同活动的计时器，更新状态');
+        // 更新现有计时器（保留较早的开始时间）
+        if (startTime.isBefore(existingTimer.startTime)) {
+          print('   使用更早的开始时间: $startTime (旧: ${existingTimer.startTime})');
+          _activeTimers[message.senderId!] = existingTimer.copyWith(
+            startTime: startTime,
+            currentDuration: DateTime.now().difference(startTime).inSeconds,
+          );
+        } else {
+          print('   保持现有开始时间: ${existingTimer.startTime}');
+        }
+        _notifyActiveTimersChanged();
+        return;
+      } else {
+        print('⚠️  [SyncService] 该设备有不同的活动在运行');
+        print('   现有activityId: ${existingTimer.activityId}');
+        print('   新的activityId: $activityId');
+        print('   将覆盖为新活动（旧活动可能已在其设备上结束）');
+      }
     }
+
+    // 获取发送者设备信息
+    DeviceInfo? senderDevice =
+        _serverService.getConnectedDevice(message.senderId!);
+
+    senderDevice ??= _connectedDevicesMap[message.senderId!];
+
+    if (senderDevice == null) {
+      final client = _clientServices[message.senderId!];
+      if (client != null) {
+        senderDevice = client.remoteDevice;
+      }
+    }
+
+    final deviceName = senderDevice?.deviceName ??
+        'Device-${message.senderId!.substring(0, 8)}';
+
+    // 创建计时器状态
+    final timerState = TimerState(
+      activityId: activityId,
+      activityName: activityName,
+      linkedTodoId: linkedTodoId,
+      linkedTodoTitle: linkedTodoTitle,
+      startTime: startTime,
+      currentDuration: 0,
+      deviceId: message.senderId!,
+      deviceName: deviceName,
+    );
+
+    // 🔒 安全地添加计时器
+    // 取消该设备的延迟移除定时器（如果存在）
+    _deviceDisconnectTimers[message.senderId!]?.cancel();
+    _deviceDisconnectTimers.remove(message.senderId!);
+
+    // 添加到活动计时器列表
+    _activeTimers[message.senderId!] = timerState;
+
+    _notifyActiveTimersChanged();
+
+    print('⏱️  [SyncService] 计时开始: ${timerState.activityName} on $deviceName');
+    print('   activityId: $activityId');
+    print('   开始时间: $startTime');
+    print('   活动计时器总数: ${_activeTimers.length}');
   }
 
   /// 处理计时停止
-  void _handleTimerStop(SyncMessage message) {
-    if (message.senderId == null) return;
+  Future<void> _handleTimerStop(SyncMessage message) async {
+    if (message.senderId == null || message.data == null) {
+      print('⚠️  [SyncService] 计时停止消息无效: 缺少senderId或data');
+      return;
+    }
 
+    final activityId = message.data!['activityId'] as String?;
+    final duration = message.data!['duration'] as int?;
+
+    if (activityId == null) {
+      print('⚠️  [SyncService] 计时停止消息无效: 缺少activityId');
+      return;
+    }
+
+    print('📥 [SyncService] 收到计时停止消息');
+    print('   发送者: ${message.senderId}');
+    print('   activityId: $activityId');
+    print('   持续时间: $duration秒');
+
+    // 🔒 查找并验证计时器
+    final existingTimer = _activeTimers[message.senderId!];
+    if (existingTimer != null) {
+      // 验证activityId是否匹配
+      if (existingTimer.activityId != activityId) {
+        print('⚠️  [SyncService] 计时器ID不匹配!');
+        print('   期望的activityId: ${existingTimer.activityId}');
+        print('   收到的activityId: $activityId');
+        print('   请求完整状态重新同步...');
+
+        // ID不匹配时，请求该设备的完整计时器状态
+        await _syncCurrentTimerState(message.senderId!);
+        return;
+      } else {
+        print('✅ [SyncService] activityId 匹配验证通过');
+      }
+
+      print('⏹️  [SyncService] 计时停止: ${existingTimer.activityName}');
+      if (duration != null) {
+        print('   持续时间: $duration秒 (${(duration / 60).toStringAsFixed(1)}分钟)');
+      }
+    } else {
+      print('⚠️  [SyncService] 计时停止: 未找到设备 ${message.senderId} 的活动计时器');
+      print('   这可能意味着计时器已经被停止或从未启动');
+    }
+
+    // 移除计时器
     _activeTimers.remove(message.senderId);
-    _notifyActiveTimersChanged();
 
-    print('⏹️  [SyncService] 计时停止: ${message.senderId}');
+    _notifyActiveTimersChanged();
   }
 
   /// 处理计时更新
-  void _handleTimerUpdate(SyncMessage message) {
+  Future<void> _handleTimerUpdate(SyncMessage message) async {
     if (message.data == null || message.senderId == null) return;
 
+    final activityId = message.data!['activityId'] as String?;
     final currentDuration = message.data!['currentDuration'] as int?;
-    if (currentDuration == null) return;
 
+    if (activityId == null || currentDuration == null) {
+      print('⚠️  [SyncService] 计时更新消息无效: 缺少activityId或currentDuration');
+      return;
+    }
+
+    print('📥 [SyncService] 收到计时更新: from ${message.senderId}');
+    print('   activityId: $activityId');
+    print('   currentDuration: $currentDuration 秒');
+
+    // 🔒 查找并验证计时器
     final existingTimer = _activeTimers[message.senderId];
     if (existingTimer != null) {
+      // 验证activityId是否匹配
+      if (existingTimer.activityId != activityId) {
+        print(
+            '⚠️  [SyncService] 计时更新ID不匹配: 期望${existingTimer.activityId}, 收到$activityId');
+        // ID不匹配时，请求该设备的完整计时器状态
+        await _syncCurrentTimerState(message.senderId!);
+        return;
+      }
+
       _activeTimers[message.senderId!] =
           existingTimer.copyWith(currentDuration: currentDuration);
-      _notifyActiveTimersChanged();
+      print(
+          '✅ [SyncService] 更新计时器时长: ${existingTimer.activityName} -> $currentDuration 秒');
+    } else {
+      // 🆕 关键修复：如果计时器不存在，主动请求完整状态而不是静默失败
+      print('⚠️  [SyncService] 未找到计时器 (设备: ${message.senderId})');
+      print('   尝试重新同步计时器状态...');
+      await _syncCurrentTimerState(message.senderId!);
+      return;
     }
+
+    _notifyActiveTimersChanged();
   }
 
   /// 处理强制停止计时（冲突解决）
-  void _handleTimerForceStop(SyncMessage message) async {
+  Future<void> _handleTimerForceStop(SyncMessage message) async {
     if (message.data == null) return;
 
     print('⚠️  [SyncService] 收到强制停止计时消息');
@@ -493,6 +833,9 @@ class SyncService {
 
       // 通知UI更新
       _notifyActiveTimersChanged();
+
+      // 🆕 通知计时器页面刷新（本地活动已被强制停止）
+      _notifyDataUpdated('timeLogs', message.senderId ?? 'unknown', 1);
     } catch (e) {
       print('❌ [SyncService] 处理强制停止失败: $e');
     }
@@ -524,6 +867,29 @@ class SyncService {
       );
     }).toList();
 
+    // 🆕 添加已删除但尚未同步的待办项（只在 syncMetadata 中存在且标记为已删除）
+    for (var entry in syncMetadata.entries) {
+      final itemId = entry.key;
+      final metadata = entry.value;
+
+      // 跳过列表的元数据（以 'list_' 开头）
+      if (itemId.startsWith('list_')) continue;
+
+      // 如果标记为已删除且不在当前 todoItems 中，添加一个占位项用于同步删除
+      if (metadata.isDeleted && !todoItems.containsKey(itemId)) {
+        syncableItems.add(SyncableTodoItem(
+          id: itemId,
+          title: '[已删除]', // 占位标题
+          description: null,
+          isCompleted: false,
+          createdAt: metadata.lastModifiedAt,
+          listId: null,
+          syncMetadata: metadata,
+        ));
+        print('🗑️ [SyncService] 包含已删除的待办项用于同步: $itemId');
+      }
+    }
+
     // 将 TodoListData 转换为 SyncableTodoList
     final syncableLists = todoLists.map((list) {
       // 列表使用 list_ 前缀的ID来存储元数据
@@ -541,6 +907,31 @@ class SyncService {
       );
     }).toList();
 
+    // 🆕 添加已删除但尚未同步的待办列表
+    final existingListIds = todoLists.map((list) => list.id).toSet();
+    for (var entry in syncMetadata.entries) {
+      final metadataId = entry.key;
+      final metadata = entry.value;
+
+      // 只处理列表的元数据（以 'list_' 开头）
+      if (!metadataId.startsWith('list_')) continue;
+
+      final listId = metadataId.substring(5); // 移除 'list_' 前缀
+
+      // 如果标记为已删除且不在当前 todoLists 中，添加一个占位列表用于同步删除
+      if (metadata.isDeleted && !existingListIds.contains(listId)) {
+        syncableLists.add(SyncableTodoList(
+          id: listId,
+          name: '[已删除]', // 占位名称
+          isExpanded: false,
+          colorValue: 0xFF2196F3,
+          itemIds: [],
+          syncMetadata: metadata,
+        ));
+        print('🗑️ [SyncService] 包含已删除的待办列表用于同步: $listId');
+      }
+    }
+
     return {
       'items': syncableItems.map((item) => item.toJson()).toList(),
       'lists': syncableLists.map((list) => list.toJson()).toList(),
@@ -549,10 +940,22 @@ class SyncService {
 
   /// 获取时间日志数据（包括正在进行的活动）
   Future<List<Map<String, dynamic>>> _getTimeLogsData() async {
+    print('📊 [SyncService] 获取时间日志数据...');
+
     final logs = await TimeLoggerStorage.getAllRecords();
+    print('   已完成的记录数: ${logs.length}');
 
     // 🆕 获取当前正在进行的活动
     final currentActivity = await TimeLoggerStorage.getCurrentActivity();
+    print('   当前活动: ${currentActivity?.name ?? "无"}');
+
+    if (currentActivity != null) {
+      print('   活动详情:');
+      print('     - name: ${currentActivity.name}');
+      print('     - startTime: ${currentActivity.startTime}');
+      print('     - linkedTodoId: ${currentActivity.linkedTodoId}');
+      print('     - linkedTodoTitle: ${currentActivity.linkedTodoTitle}');
+    }
 
     // 合并已完成的记录和正在进行的活动
     final allActivities = <ActivityRecordData>[...logs];
@@ -567,9 +970,13 @@ class SyncService {
 
       if (!isDuplicate) {
         allActivities.add(currentActivity);
-        print('📤 [SyncService] 包含正在进行的活动: ${currentActivity.name}');
+        print('✅ [SyncService] 包含正在进行的活动: ${currentActivity.name}');
+      } else {
+        print('⚠️  [SyncService] 当前活动已在记录中，跳过');
       }
     }
+
+    print('   总共准备发送: ${allActivities.length} 条时间日志');
 
     // 将 ActivityRecordData 转换为 SyncableTimeLog
     final syncableLogs = allActivities.map((log) {
@@ -589,6 +996,7 @@ class SyncService {
 
       return SyncableTimeLog(
         id: id,
+        activityId: log.activityId, // 🆕 使用ActivityRecordData中的activityId
         name: log.name,
         startTime: log.startTime,
         endTime: log.endTime,
@@ -603,18 +1011,18 @@ class SyncService {
 
   /// 获取目标数据
   Future<List<Map<String, dynamic>>> _getTargetsData() async {
+    print('📊 [SyncService] 开始获取目标数据...');
     final storage = TargetStorage();
     final targets = await storage.loadTargets();
+    final syncMetadata = await TodoStorage.getSyncMetadata();
+    print('📂 [SyncService] 加载了 ${targets.length} 个目标');
 
     // 将 Target 转换为 SyncableTarget
     final syncableTargets = targets.map((target) {
-      // 创建同步元数据
-      final metadata = SyncMetadata(
-        lastModifiedAt: target.createdAt,
-        lastModifiedBy: _currentDevice?.deviceId ?? 'unknown',
-        version: 1,
-        isDeleted: !target.isActive, // 使用 isActive 标识删除状态
-      );
+      // 获取或创建同步元数据
+      final targetMetadataId = 'target_${target.id}';
+      final metadata = syncMetadata[targetMetadataId] ??
+          SyncMetadata.create(_currentDevice?.deviceId ?? 'unknown');
 
       return SyncableTarget(
         id: target.id,
@@ -631,6 +1039,37 @@ class SyncService {
       );
     }).toList();
 
+    // 🆕 添加已删除但尚未同步的目标（只在 syncMetadata 中存在且标记为已删除）
+    final existingTargetIds = targets.map((t) => t.id).toSet();
+    for (var entry in syncMetadata.entries) {
+      final metadataId = entry.key;
+      final metadata = entry.value;
+
+      // 只处理目标的元数据（以 'target_' 开头）
+      if (!metadataId.startsWith('target_')) continue;
+
+      final targetId = metadataId.substring(7); // 移除 'target_' 前缀
+
+      // 如果标记为已删除且不在当前 targets 中，添加一个占位目标用于同步删除
+      if (metadata.isDeleted && !existingTargetIds.contains(targetId)) {
+        syncableTargets.add(SyncableTarget(
+          id: targetId,
+          name: '[已删除]', // 占位名称
+          type: 0, // TargetType.achievement
+          period: 0, // TimePeriod.daily
+          targetSeconds: 0,
+          linkedTodoIds: [],
+          linkedListIds: [],
+          createdAt: metadata.lastModifiedAt,
+          isActive: false,
+          colorValue: 0xFF2196F3,
+          syncMetadata: metadata,
+        ));
+        print('🗑️ [SyncService] 包含已删除的目标用于同步: $targetId');
+      }
+    }
+
+    print('✅ [SyncService] 目标数据准备完成: ${syncableTargets.length} 个（包含已删除）');
     return syncableTargets.map((target) => target.toJson()).toList();
   }
 
@@ -641,10 +1080,44 @@ class SyncService {
     }
   }
 
+  // ==================== 计时器同步 Step 5: 通知 UI 更新 ====================
+
   /// 通知活动计时器变化
+  ///
+  /// 这是连接数据层和UI层的关键函数
+  /// 工作流程：
+  /// 1. 从 _activeTimers Map 获取所有活动计时器
+  /// 2. 打印日志（用于调试）
+  /// 3. 通过 _activeTimersController 发送事件
+  /// 4. UI 中的 StreamBuilder 监听 activeTimersStream 会收到更新
+  ///
+  /// 为什么使用 Stream？
+  /// - Stream 是 Flutter 中的响应式数据流
+  /// - StreamBuilder 会自动监听数据变化并重建 UI
+  /// - 这样实现了数据和 UI 的解耦
   void _notifyActiveTimersChanged() {
+    // 获取当前所有活动计时器的列表
+    // activeTimers getter 返回 _activeTimers.values.toList()
+    final timers = activeTimers;
+
+    print('📢 [SyncService] 通知活动计时器变化, 当前 ${timers.length} 个活动计时器');
+    print('   当前设备ID: ${_currentDevice?.deviceId}');
+
+    // 打印每个计时器的详细信息（用于调试）
+    for (final timer in timers) {
+      print(
+          '   - ${timer.activityName} (设备: ${timer.deviceName}, ID: ${timer.deviceId}): ${timer.currentDuration}s');
+    }
+
+    // 🎯 关键：通过 StreamController 发送新事件
+    // 这会触发所有监听 activeTimersStream 的 StreamBuilder 重建
     if (!_activeTimersController.isClosed) {
-      _activeTimersController.add(activeTimers);
+      _activeTimersController.add(timers);
+      print('✅ [SyncService] 活动计时器已通过Stream发送到UI');
+      print('   发送的计时器数量: ${timers.length}');
+      print('   Stream 有监听者吗: ${_activeTimersController.hasListener}');
+    } else {
+      print('⚠️  [SyncService] 活动计时器控制器已关闭');
     }
   }
 
@@ -822,40 +1295,82 @@ class SyncService {
           return true;
 
         case 'targets':
-          // 验证目标数据
-          if (data is! List) {
-            print('❌ [SyncService] 目标数据类型错误: 期望 List，实际 ${data.runtimeType}');
+          // 验证目标数据（与todos保持一致的结构）
+          if (data is Map<String, dynamic> && data.containsKey('items')) {
+            // 新格式：{items: [...]}
+            final items = data['items'];
+            if (items is! List) {
+              print('❌ [SyncService] 目标数据items类型错误: ${items.runtimeType}');
+              return false;
+            }
+            for (var i = 0; i < items.length; i++) {
+              final target = items[i];
+              if (target is! Map) {
+                print('❌ [SyncService] 目标[$i]类型错误');
+                return false;
+              }
+              if (!target.containsKey('id') ||
+                  !target.containsKey('name') ||
+                  !target.containsKey('type')) {
+                print('❌ [SyncService] 目标[$i]缺少必需字段');
+                return false;
+              }
+              // 🆕 验证类型和周期值
+              if (target.containsKey('type') && target['type'] is! int) {
+                print('❌ [SyncService] 目标[$i]type类型无效');
+                return false;
+              }
+              if (target.containsKey('period') && target['period'] is! int) {
+                print('❌ [SyncService] 目标[$i]period类型无效');
+                return false;
+              }
+              if (target.containsKey('targetSeconds') &&
+                  target['targetSeconds'] is! int) {
+                print('❌ [SyncService] 目标[$i]targetSeconds类型无效');
+                return false;
+              }
+              if (!target.containsKey('syncMetadata')) {
+                print('❌ [SyncService] 目标[$i]缺少syncMetadata');
+                return false;
+              }
+            }
+            print('✅ [SyncService] 目标数据验证通过: ${items.length}个');
+            return true;
+          } else if (data is List) {
+            // 兼容旧格式：直接是列表
+            for (var i = 0; i < data.length; i++) {
+              final target = data[i];
+              if (target is! Map) {
+                print('❌ [SyncService] 目标[$i]类型错误');
+                return false;
+              }
+              if (!target.containsKey('id') ||
+                  !target.containsKey('name') ||
+                  !target.containsKey('type')) {
+                print('❌ [SyncService] 目标[$i]缺少必需字段');
+                return false;
+              }
+              // 🆕 验证类型和周期值
+              if (target.containsKey('type') && target['type'] is! int) {
+                print('❌ [SyncService] 目标[$i]type类型无效');
+                return false;
+              }
+              if (target.containsKey('period') && target['period'] is! int) {
+                print('❌ [SyncService] 目标[$i]period类型无效');
+                return false;
+              }
+              if (target.containsKey('targetSeconds') &&
+                  target['targetSeconds'] is! int) {
+                print('❌ [SyncService] 目标[$i]targetSeconds类型无效');
+                return false;
+              }
+            }
+            print('✅ [SyncService] 目标数据验证通过 (旧格式): ${data.length}个');
+            return true;
+          } else {
+            print('❌ [SyncService] 目标数据格式错误: ${data.runtimeType}');
             return false;
           }
-          for (var i = 0; i < data.length; i++) {
-            final target = data[i];
-            if (target is! Map) {
-              print('❌ [SyncService] 目标[$i]类型错误');
-              return false;
-            }
-            if (!target.containsKey('id') ||
-                !target.containsKey('name') ||
-                !target.containsKey('type')) {
-              print('❌ [SyncService] 目标[$i]缺少必需字段');
-              return false;
-            }
-            // 🆕 验证类型和周期值
-            if (target.containsKey('type') && target['type'] is! int) {
-              print('❌ [SyncService] 目标[$i]type类型无效');
-              return false;
-            }
-            if (target.containsKey('period') && target['period'] is! int) {
-              print('❌ [SyncService] 目标[$i]period类型无效');
-              return false;
-            }
-            if (target.containsKey('targetSeconds') &&
-                target['targetSeconds'] is! int) {
-              print('❌ [SyncService] 目标[$i]targetSeconds类型无效');
-              return false;
-            }
-          }
-          print('✅ [SyncService] 目标数据验证通过: ${data.length}个');
-          return true;
 
         default:
           print('⚠️  [SyncService] 未知数据类型: $dataType');
@@ -958,6 +1473,7 @@ class SyncService {
   /// 连接到设备
   Future<bool> connectToDevice(DeviceInfo device) async {
     if (_currentDevice == null) {
+      print('❌ [SyncService] 无法连接: 当前设备信息未初始化');
       _handleError(SyncError(
         type: SyncErrorType.unknown,
         message: '当前设备信息未初始化',
@@ -966,14 +1482,16 @@ class SyncService {
       return false;
     }
 
-    print('🔗 [SyncService] 连接到设备: ${device.deviceName}');
-    print('🔍 [SyncService] 设备详情: deviceId=${device.deviceId}');
-    print(
-        '🔍 [SyncService] 设备IP: "${device.ipAddress}" (长度: ${device.ipAddress.length})');
-    print('🔍 [SyncService] 设备端口: ${device.port}');
+    print('🔗 [SyncService] 开始连接到设备');
+    print('   目标设备名: ${device.deviceName}');
+    print('   目标设备ID: ${device.deviceId}');
+    print('   目标设备IP: "${device.ipAddress}"');
+    print('   目标设备端口: ${device.port}');
+    print('   当前设备名: ${_currentDevice!.deviceName}');
 
     // 验证IP地址不为空
     if (device.ipAddress.isEmpty) {
+      print('❌ [SyncService] IP地址为空，无法连接');
       _handleError(SyncError(
         type: SyncErrorType.deviceNotFound,
         message: 'IP地址为空，无法连接',
@@ -985,18 +1503,22 @@ class SyncService {
     // 使用 _safeExecute 进行错误处理
     final result = await _safeExecute<bool>(
       () async {
+        print('📞 [SyncService] 创建客户端连接...');
         // 创建客户端服务
         final client = SyncClientService();
         final success = await client.connect(_currentDevice!, device);
 
         if (success) {
+          print('✅ [SyncService] 连接成功，保存客户端服务');
           _clientServices[device.deviceId] = client;
 
           // 将设备添加到已连接设备列表
           _connectedDevicesMap[device.deviceId] = device;
+          print('   已连接设备总数: ${_connectedDevicesMap.length}');
           _notifyConnectedDevicesChanged();
 
           // 设置回调
+          print('🔧 [SyncService] 设置客户端回调函数');
           client.onMessageReceived = _handleClientMessage;
           client.onDisconnected = () {
             _clientServices.remove(device.deviceId);
@@ -1005,6 +1527,11 @@ class SyncService {
           };
 
           print('✅ [SyncService] 成功连接到: ${device.deviceName}');
+
+          // 🆕 连接成功后，立即检查并传递当前正在进行的计时信息
+          print('🔄 [SyncService] 检查当前计时状态...');
+          await _syncCurrentTimerState(device.deviceId);
+
           return true;
         } else {
           _handleError(SyncError(
@@ -1055,52 +1582,135 @@ class SyncService {
     _handleServerMessage(message, message.senderId ?? '');
   }
 
-  /// 广播计时开始
-  void broadcastTimerStart(
-      String todoId, String todoTitle, DateTime startTime) {
-    if (_currentDevice == null) return;
+  // ==================== 计时器同步 Step 2: 广播计时开始消息 ====================
 
-    final message = SyncMessage(
-      type: SyncMessageType.timerStart,
-      senderId: _currentDevice!.deviceId,
-      data: {
-        'todoId': todoId,
-        'todoTitle': todoTitle,
-        'startTime': startTime.toIso8601String(),
-      },
+  /// 广播计时开始
+  ///
+  /// 这是计时器同步的核心函数，负责将本地计时器启动事件通知所有已连接设备
+  ///
+  /// 工作原理：
+  /// 1. 创建包含计时信息的 SyncMessage
+  /// 2. 通过两种渠道发送消息：
+  ///    a) 服务器广播：发送给所有连接到本设备的客户端（本设备作为服务器）
+  ///    b) 客户端发送：发送给本设备连接到的所有服务器（本设备作为客户端）
+  /// 3. 这样确保了双向通信，无论哪个设备是服务器/客户端都能收到消息
+  void broadcastTimerStart(String activityId, String activityName,
+      DateTime startTime, String? todoId, String? todoTitle) {
+    if (_currentDevice == null) {
+      print('⚠️  [SyncService] 无法广播计时开始：当前设备未初始化');
+      return;
+    }
+
+    print('📤 [SyncService] 广播计时开始');
+    print('   activityId: $activityId');
+    print('   activityName: $activityName');
+    print('   开始时间: $startTime');
+
+    final message = SyncMessage.timerStart(
+      deviceId: _currentDevice!.deviceId,
+      activityId: activityId,
+      activityName: activityName,
+      startTime: startTime,
+      linkedTodoId: todoId,
+      linkedTodoTitle: todoTitle,
     );
 
-    _serverService.broadcastMessage(message);
-    print('📢 [SyncService] 广播计时开始: $todoTitle');
+    int sentCount = 0;
+
+    // 通过服务器广播
+    if (_isServerRunning) {
+      _serverService.broadcastMessage(message);
+      sentCount++;
+      print('   ✓ 通过服务器广播');
+    }
+
+    // 通过客户端发送
+    for (final client in _clientServices.values) {
+      if (client.isConnected) {
+        client.sendMessage(message);
+        sentCount++;
+      }
+    }
+
+    print('   已发送到 $sentCount 个连接');
   }
 
   /// 广播计时停止
   void broadcastTimerStop(
-      String todoId, DateTime startTime, DateTime endTime, int duration) {
-    if (_currentDevice == null) return;
+      String activityId, DateTime startTime, DateTime endTime, int duration) {
+    if (_currentDevice == null) {
+      print('⚠️  [SyncService] 无法广播计时停止：当前设备未初始化');
+      return;
+    }
 
-    final message = SyncMessage(
-      type: SyncMessageType.timerStop,
-      senderId: _currentDevice!.deviceId,
-      data: {
-        'todoId': todoId,
-        'startTime': startTime.toIso8601String(),
-        'endTime': endTime.toIso8601String(),
-        'duration': duration,
-      },
+    print('📤 [SyncService] 广播计时停止');
+    print('   activityId: $activityId');
+    print('   持续时间: $duration秒');
+
+    final message = SyncMessage.timerStop(
+      deviceId: _currentDevice!.deviceId,
+      activityId: activityId,
+      startTime: startTime,
+      endTime: endTime,
+      duration: duration,
     );
 
-    _serverService.broadcastMessage(message);
-    print('📢 [SyncService] 广播计时停止: $todoId');
+    int sentCount = 0;
+
+    // 通过服务器广播
+    if (_isServerRunning) {
+      _serverService.broadcastMessage(message);
+      sentCount++;
+    }
+
+    // 通过客户端发送
+    for (final client in _clientServices.values) {
+      if (client.isConnected) {
+        client.sendMessage(message);
+        sentCount++;
+      }
+    }
+
+    print('   已发送到 $sentCount 个连接');
+  }
+
+  /// 广播计时更新
+  void broadcastTimerUpdate(String activityId, int currentDuration) {
+    if (_currentDevice == null) return;
+
+    final message = SyncMessage.timerUpdate(
+      deviceId: _currentDevice!.deviceId,
+      activityId: activityId,
+      currentDuration: currentDuration,
+    );
+
+    // 通过服务器广播
+    if (_isServerRunning) {
+      _serverService.broadcastMessage(message);
+    }
+
+    // 通过客户端发送
+    for (final client in _clientServices.values) {
+      if (client.isConnected) {
+        client.sendMessage(message);
+      }
+    }
   }
 
   // ==================== 数据同步功能 ====================
 
   /// 全量同步所有数据到指定设备
   Future<bool> syncAllDataToDevice(String deviceId) async {
+    print('🔘 [SyncService] syncAllDataToDevice 调用，强制全量同步模式');
+
+    // 🆕 用户点击同步按钮时，强制使用全量同步模式
+    final originalMode = _syncMode;
+    _syncMode = SyncMode.full;
+
     // 🆕 使用同步锁防止并发
     final acquired = await _syncLock.acquire(deviceId, 'syncAllDataToDevice');
     if (!acquired) {
+      _syncMode = originalMode; // 恢复原模式
       _handleError(SyncError(
         type: SyncErrorType.operationInProgress,
         message: '同步操作正在进行中',
@@ -1114,12 +1724,19 @@ class SyncService {
       return await _syncAllDataToDeviceInternal(deviceId);
     } finally {
       await _syncLock.release(deviceId);
+      _syncMode = originalMode; // 恢复原模式
+      print('ℹ️  [SyncService] 同步完成，恢复同步模式: $originalMode');
     }
   }
 
   /// 内部同步方法（不包含锁检查）
   Future<bool> _syncAllDataToDeviceInternal(String deviceId) async {
+    print('🚀 [SyncService] _syncAllDataToDeviceInternal 开始');
+    print('   目标设备ID: $deviceId');
+    print('   当前设备: ${_currentDevice?.deviceName ?? "未初始化"}');
+
     if (_currentDevice == null) {
+      print('❌ [SyncService] 当前设备未初始化');
       _handleError(SyncError(
         type: SyncErrorType.unknown,
         message: '设备信息未初始化',
@@ -1130,9 +1747,11 @@ class SyncService {
 
     // 检查设备是否已连接（服务器端连接）
     DeviceInfo? device = _serverService.getConnectedDevice(deviceId);
+    print('   从 _serverService 查找设备: ${device != null ? "找到" : "未找到"}');
 
     // 如果不是服务器端连接，检查是否为客户端连接
     device ??= _connectedDevicesMap[deviceId];
+    print('   从 _connectedDevicesMap 查找设备: ${device != null ? "找到" : "未找到"}');
 
     // 如果设备未连接，尝试自动连接
     if (device == null) {
@@ -1193,6 +1812,17 @@ class SyncService {
       ));
       await _resolveActiveTimerConflicts(deviceId);
 
+      // 🆕 同步当前计时器状态 (15%)
+      _notifySyncProgress(SyncProgressEvent(
+        deviceId: deviceId,
+        deviceName: device.deviceName,
+        phase: 'syncing',
+        dataType: 'timers',
+        progress: 0.15,
+        message: '正在同步计时器状态...',
+      ));
+      await _syncCurrentTimerState(deviceId);
+
       // 同步待办事项 (40%)
       _notifySyncProgress(SyncProgressEvent(
         deviceId: deviceId,
@@ -1247,6 +1877,7 @@ class SyncService {
       await _syncTimeLogsToDevice(deviceId);
 
       // 同步目标 (90%)
+      print('🎯 [SyncService] 开始同步目标...');
       _notifySyncProgress(SyncProgressEvent(
         deviceId: deviceId,
         deviceName: device.deviceName,
@@ -1258,6 +1889,7 @@ class SyncService {
 
       final targetsData = await _getTargetsData();
       final targetsCount = targetsData.length;
+      print('📊 [SyncService] 准备发送 $targetsCount 个目标');
 
       _notifySyncProgress(SyncProgressEvent(
         deviceId: deviceId,
@@ -1268,6 +1900,7 @@ class SyncService {
         message: '正在发送 $targetsCount 个目标...',
       ));
       await _syncTargetsToDevice(deviceId);
+      print('✅ [SyncService] 目标同步完成');
 
       // 完成 (100%)
       _notifySyncProgress(SyncProgressEvent(
@@ -1278,6 +1911,9 @@ class SyncService {
         progress: 1.0,
         message: '同步完成！',
       ));
+
+      // 🆕 清理已成功同步的删除标记
+      await _cleanupDeletedItemsMetadata();
 
       // 记录成功
       await _historyService.recordPush(
@@ -1361,6 +1997,12 @@ class SyncService {
     print('🔄 [SyncService] 从设备拉取数据: $deviceId');
 
     try {
+      // 🆕 首先请求当前计时器状态
+      // 注意：虽然连接时会自动同步计时器，但显式请求可确保最新状态
+      print('⏱️  [SyncService] 请求计时器状态...');
+      // 发送 dataRequest 为 'currentTimer' (需要服务端支持)
+      // 或直接等待自动同步（设备连接时已触发）
+
       // 请求待办事项数据
       client.requestData('todos');
 
@@ -1376,7 +2018,7 @@ class SyncService {
         deviceName: client.remoteDevice?.deviceName ?? 'Unknown',
         dataType: 'all',
         itemCount: 0,
-        description: '请求全量数据 (包含待办、日志、目标)',
+        description: '请求全量数据 (包含待办、日志、目标、计时器)',
         success: true,
       );
 
@@ -1391,19 +2033,32 @@ class SyncService {
   // ==================== 活动计时冲突解决 ====================
 
   /// 解决活动计时冲突
-  /// 当多台设备有正在进行的计时活动时，保留最新开始的活动，结束其他活动
-  /// 如果有多个正在进行的活动，结束较早开始的活动，结束时间为较新活动的开始时间
-  Future<void> _resolveActiveTimerConflicts(String remoteDeviceId) async {
+  /// 检查所有设备的计时器，如果存在多个活动，保留最新开始的，结束其他
+  Future<void> _resolveActiveTimerConflicts(String? triggerDeviceId) async {
+    // 🔒 防止并发执行冲突解决
+    if (_isResolvingConflicts) {
+      print('⏭️  [SyncService] 冲突解决正在进行中，跳过本次调用');
+      return;
+    }
+
+    _isResolvingConflicts = true;
+
+    try {
+      await _doResolveActiveTimerConflicts(triggerDeviceId);
+    } finally {
+      _isResolvingConflicts = false;
+    }
+  }
+
+  /// 执行实际的冲突解决逻辑
+  Future<void> _doResolveActiveTimerConflicts(String? triggerDeviceId) async {
     print('🔍 [SyncService] 检测活动计时冲突...');
 
     try {
       // 1. 获取本地当前活动
       final localActivity = await TimeLoggerStorage.getCurrentActivity();
 
-      // 2. 获取远程设备的活动状态
-      final remoteTimer = _activeTimers[remoteDeviceId];
-
-      // 3. 收集所有正在进行的活动
+      // 2. 收集所有正在进行的活动
       final activeActivities = <_ActiveActivity>[];
 
       // 添加本地活动
@@ -1418,28 +2073,32 @@ class SyncService {
             '📍 [SyncService] 本地活动: ${localActivity.name} (开始: ${localActivity.startTime})');
       }
 
-      // 添加远程活动
-      if (remoteTimer != null) {
-        // 创建 ActivityRecordData 表示远程活动
+      // 添加所有远程活动
+      for (final entry in _activeTimers.entries) {
+        final deviceId = entry.key;
+        final timer = entry.value;
+
+        // 跳过本地设备的计时器（已在上面添加）
+        if (deviceId == _currentDevice?.deviceId) continue;
+
         final remoteActivity = ActivityRecordData(
-          name: remoteTimer.todoTitle,
-          startTime: remoteTimer.startTime,
-          endTime: null, // 正在进行中
-          linkedTodoId: remoteTimer.todoId,
-          linkedTodoTitle: remoteTimer.todoTitle,
+          name: timer.activityName,
+          startTime: timer.startTime,
+          endTime: null,
+          linkedTodoId: timer.linkedTodoId,
+          linkedTodoTitle: timer.linkedTodoTitle,
         );
         activeActivities.add(_ActiveActivity(
-          deviceId: remoteDeviceId,
-          deviceName:
-              _connectedDevicesMap[remoteDeviceId]?.deviceName ?? '远程设备',
+          deviceId: deviceId,
+          deviceName: timer.deviceName,
           activity: remoteActivity,
           isLocal: false,
         ));
         print(
-            '� [SyncService] 远程活动: ${remoteTimer.todoTitle} (开始: ${remoteTimer.startTime})');
+            '📍 [SyncService] 远程活动: ${timer.activityName} (${timer.deviceName}, 开始: ${timer.startTime})');
       }
 
-      // 4. 如果没有活动或只有一个活动，无需处理
+      // 3. 如果没有活动或只有一个活动，无需处理
       if (activeActivities.isEmpty) {
         print('✅ [SyncService] 无活动冲突');
         return;
@@ -1447,19 +2106,26 @@ class SyncService {
 
       if (activeActivities.length == 1) {
         print('✅ [SyncService] 只有一个活动，无需冲突解决');
-        // 确保单个活动被正确广播
+        // 确保单个活动被正确处理
         final single = activeActivities.first;
-        if (single.isLocal && single.activity.linkedTodoId != null) {
+
+        if (single.isLocal) {
+          // 本地活动，广播给其他设备（使用稳定的activityId）
           broadcastTimerStart(
-            single.activity.linkedTodoId!,
-            single.activity.linkedTodoTitle ?? single.activity.name,
+            single.activity.activityId,
+            single.activity.name,
             single.activity.startTime,
+            single.activity.linkedTodoId,
+            single.activity.linkedTodoTitle,
           );
+        } else {
+          // 远程活动已存在于 _activeTimers 中，无需额外处理
+          print('📥 [SyncService] 远程活动已存在: ${single.activity.name}');
         }
         return;
       }
 
-      // 5. 存在多个活动，需要解决冲突
+      // 4. 存在多个活动，需要解决冲突
       print('⚠️  [SyncService] 检测到 ${activeActivities.length} 个正在进行的活动冲突');
 
       // 按开始时间排序，最新的在前
@@ -1492,24 +2158,60 @@ class SyncService {
         }
       }
 
-      // 6. 确保最新活动被正确设置和广播
+      // 5. 确保最新活动被正确设置
       if (newestActivity.isLocal) {
-        // 本地活动保持运行，广播给其他设备
-        if (newestActivity.activity.linkedTodoId != null) {
-          broadcastTimerStart(
-            newestActivity.activity.linkedTodoId!,
-            newestActivity.activity.linkedTodoTitle ??
-                newestActivity.activity.name,
-            newestActivity.activity.startTime,
-          );
-        }
+        // 本地活动保持运行，广播给其他设备（使用稳定的activityId）
+        broadcastTimerStart(
+          newestActivity.activity.activityId,
+          newestActivity.activity.name,
+          newestActivity.activity.startTime,
+          newestActivity.activity.linkedTodoId,
+          newestActivity.activity.linkedTodoTitle,
+        );
       } else {
-        // 远程活动是最新的，本地需要同步显示（通过 _activeTimers 机制）
-        print('📥 [SyncService] 最新活动来自远程设备，本地已同步显示');
+        // 🆕 远程活动获胜，需要在本地设置并通知UI
+        print('📥 [SyncService] 远程活动获胜，设置为本地当前活动');
+
+        // 将远程活动保存为本地当前活动
+        await TimeLoggerStorage.saveCurrentActivity(ActivityRecordData(
+          activityId: newestActivity.activity.activityId,
+          name: newestActivity.activity.name,
+          startTime: newestActivity.activity.startTime,
+          endTime: null,
+          linkedTodoId: newestActivity.activity.linkedTodoId,
+          linkedTodoTitle: newestActivity.activity.linkedTodoTitle,
+        ));
+        print('💾 [SyncService] 远程活动已保存为本地当前活动');
+
+        // 🔑 关键修复：确保远程活动在 _activeTimers 中（如果不存在则添加）
+        if (!_activeTimers.containsKey(newestActivity.deviceId)) {
+          final timerState = TimerState(
+            activityId: newestActivity.activity.activityId,
+            activityName: newestActivity.activity.name,
+            linkedTodoId: newestActivity.activity.linkedTodoId,
+            linkedTodoTitle: newestActivity.activity.linkedTodoTitle,
+            startTime: newestActivity.activity.startTime,
+            currentDuration: DateTime.now()
+                .difference(newestActivity.activity.startTime)
+                .inSeconds,
+            deviceId: newestActivity.deviceId,
+            deviceName: newestActivity.deviceName,
+          );
+          _activeTimers[newestActivity.deviceId] = timerState;
+          print('✅ [SyncService] 远程活动已添加到 _activeTimers');
+        }
+
+        // 🔑 关键修复：通知活动计时器变化，让UI显示远程活动
+        _notifyActiveTimersChanged();
+        print('📢 [SyncService] 已调用 _notifyActiveTimersChanged() 更新UI计时器显示');
+
+        // 通知计时器页面刷新（显示远程活动）
+        _notifyDataUpdated('timeLogs', newestActivity.deviceId, 1);
+        print('📢 [SyncService] 已通知UI刷新以显示远程活动');
       }
 
       print(
-          '✅ [SyncService] 活动冲突已解决，保留 1 个活动，结束 ${activeActivities.length - 1} 个活动');
+          '✅ [SyncService] 冲突已解决: 保留1个活动，结束${activeActivities.length - 1}个活动');
     } catch (e) {
       print('❌ [SyncService] 解决活动冲突失败: $e');
       // 不抛出异常，继续同步其他数据
@@ -1567,20 +2269,68 @@ class SyncService {
       await TimeLoggerStorage.saveCurrentActivity(null);
       print('🗑️  [SyncService] 本地当前活动已清除');
 
-      // 广播计时停止
-      if (localActivity.linkedTodoId != null) {
-        final duration =
-            conflictTime.difference(localActivity.startTime).inSeconds;
-        broadcastTimerStop(
-          localActivity.linkedTodoId!,
-          localActivity.startTime,
-          conflictTime,
-          duration,
-        );
+      // 🔑 从本地活动列表中移除（如果存在）
+      final localDeviceId = _currentDevice?.deviceId;
+      if (localDeviceId != null && _activeTimers.containsKey(localDeviceId)) {
+        _activeTimers.remove(localDeviceId);
+        print('🗑️  [SyncService] 从 _activeTimers 移除本地活动');
       }
+
+      // 广播计时停止
+      final duration =
+          conflictTime.difference(localActivity.startTime).inSeconds;
+      broadcastTimerStop(
+        localActivity.activityId,
+        localActivity.startTime,
+        conflictTime,
+        duration,
+      );
+
+      // 🆕 通知活动计时器变化（本地活动已结束）
+      _notifyActiveTimersChanged();
+      print('📢 [SyncService] 已调用 _notifyActiveTimersChanged() 更新UI计时器显示');
+
+      // 🆕 通知计时器页面刷新（本地活动已结束）
+      _notifyDataUpdated('timeLogs', _currentDevice?.deviceId ?? 'local', 1);
     } catch (e) {
       print('❌ [SyncService] 结束本地活动失败: $e');
       rethrow;
+    }
+  }
+
+  /// 同步当前计时器状态到新连接的设备
+  Future<void> _syncCurrentTimerState(String deviceId) async {
+    print('⏱️  [SyncService] 同步当前计时器状态到: $deviceId');
+
+    try {
+      // 获取本地当前活动
+      final localActivity = await TimeLoggerStorage.getCurrentActivity();
+
+      if (localActivity != null) {
+        print('📤 [SyncService] 发现本地正在进行的计时:');
+        print('   活动ID: ${localActivity.activityId}');
+        print('   活动名称: ${localActivity.name}');
+        print('   任务: ${localActivity.linkedTodoTitle ?? "无"}');
+        print('   开始时间: ${localActivity.startTime}');
+
+        // 发送计时开始消息给新连接的设备（使用稳定的activityId）
+        final message = SyncMessage.timerStart(
+          deviceId: _currentDevice!.deviceId,
+          activityId: localActivity.activityId,
+          activityName: localActivity.name,
+          startTime: localActivity.startTime,
+          linkedTodoId: localActivity.linkedTodoId,
+          linkedTodoTitle: localActivity.linkedTodoTitle,
+        );
+
+        _sendMessageToDevice(deviceId, message);
+        print(
+            '✅ [SyncService] 已发送当前计时状态到新设备 (activityId: ${localActivity.activityId})');
+      } else {
+        print('ℹ️  [SyncService] 本地没有正在进行的计时');
+      }
+    } catch (e) {
+      print('❌ [SyncService] 同步计时器状态失败: $e');
     }
   }
 
@@ -1626,17 +2376,21 @@ class SyncService {
           ? SyncCompression.compressJson(syncData)
           : {'compressed': false, 'data': syncData};
 
+      // 🆕 生成同步会话ID
+      _currentOutgoingSyncSession = const Uuid().v4();
+
       // 发送数据
       final message = SyncMessage.dataUpdate(
         _currentDevice!.deviceId,
         'todos',
         envelope,
+        syncSessionId: _currentOutgoingSyncSession,
       );
       _sendMessageToDevice(deviceId, message);
 
       final totalCount = itemsToSync.length + listsToSync.length;
       print(
-          '✅ [SyncService] 已发送 ${itemsToSync.length} 个待办事项和 ${listsToSync.length} 个列表 (共 $totalCount 项)');
+          '✅ [SyncService] 已发送 ${itemsToSync.length} 个待办事项和 ${listsToSync.length} 个列表 (共 $totalCount 项) [会话: $_currentOutgoingSyncSession]');
     } catch (e) {
       print('❌ [SyncService] 同步待办事项失败: $e');
       rethrow;
@@ -1696,43 +2450,130 @@ class SyncService {
     try {
       // 获取本地数据
       final targetsData = await _getTargetsData();
+      print('📊 [SyncService] 获取到 ${targetsData.length} 个本地目标');
 
       // 解析为 SyncableTarget 对象
       final allTargets =
           targetsData.map((json) => SyncableTarget.fromJson(json)).toList();
+      print('📦 [SyncService] 解析完成，准备过滤...');
 
       // 根据同步模式过滤需要同步的数据
       final targetsToSync =
           _filterSyncableData<SyncableTarget>(allTargets, deviceId);
+      print('🔍 [SyncService] 过滤后剩余 ${targetsToSync.length} 个目标需要同步');
 
       // 如果没有需要同步的数据，跳过
       if (targetsToSync.isEmpty) {
-        print('ℹ️  [SyncService] 没有需要同步的目标');
+        print('ℹ️  [SyncService] 没有需要同步的目标（本地有 ${allTargets.length} 个，但都已同步）');
         return;
       }
 
-      // 转换回 JSON
-      final syncData = targetsToSync.map((target) => target.toJson()).toList();
+      // 构建同步数据（与todos保持一致的结构）
+      final syncData = {
+        'items': targetsToSync.map((target) => target.toJson()).toList(),
+      };
+
+      // 🆕 压缩数据（如果数据量大）
+      final dataSize = SyncCompression.estimateJsonSize(syncData);
+      final envelope = dataSize > SyncCompression.compressionThreshold
+          ? SyncCompression.compressJson(syncData)
+          : {'compressed': false, 'data': syncData};
+
+      // 🆕 生成同步会话ID
+      _currentOutgoingSyncSession = const Uuid().v4();
 
       // 发送数据
       final message = SyncMessage.dataUpdate(
         _currentDevice!.deviceId,
         'targets',
-        syncData,
+        envelope,
+        syncSessionId: _currentOutgoingSyncSession,
       );
       _sendMessageToDevice(deviceId, message);
 
-      print('✅ [SyncService] 已发送 ${targetsToSync.length} 个目标');
+      print(
+          '✅ [SyncService] 已发送 ${targetsToSync.length} 个目标 [会话: $_currentOutgoingSyncSession]');
     } catch (e) {
       print('❌ [SyncService] 同步目标失败: $e');
       rethrow;
     }
   }
 
+  /// 🆕 清理已删除项的元数据（在同步成功后调用）
+  /// 删除那些标记为已删除且已经同步到所有设备的项的元数据
+  Future<void> _cleanupDeletedItemsMetadata() async {
+    try {
+      print('🧹 [SyncService] 开始清理已删除项的元数据...');
+
+      final syncMetadata = await TodoStorage.getSyncMetadata();
+      final todoItems = await TodoStorage.getTodoItems();
+      final todoLists = await TodoStorage.getTodoLists();
+      final existingListIds = todoLists.map((list) => list.id).toSet();
+
+      // 🆕 获取目标数据
+      final targetStorage = TargetStorage();
+      final targets = await targetStorage.loadTargets();
+      final existingTargetIds = targets.map((t) => t.id).toSet();
+
+      int cleanedCount = 0;
+      final keysToRemove = <String>[];
+
+      for (var entry in syncMetadata.entries) {
+        final metadataId = entry.key;
+        final metadata = entry.value;
+
+        // 只清理已删除的项
+        if (!metadata.isDeleted) continue;
+
+        // 对于待办项
+        if (!metadataId.startsWith('list_') &&
+            !metadataId.startsWith('target_')) {
+          // 如果已删除且不在当前 todoItems 中，可以清理
+          if (!todoItems.containsKey(metadataId)) {
+            keysToRemove.add(metadataId);
+            cleanedCount++;
+          }
+        }
+        // 对于待办列表
+        else if (metadataId.startsWith('list_')) {
+          final listId = metadataId.substring(5); // 移除 'list_' 前缀
+          // 如果已删除且不在当前 todoLists 中，可以清理
+          if (!existingListIds.contains(listId)) {
+            keysToRemove.add(metadataId);
+            cleanedCount++;
+          }
+        }
+        // 🆕 对于目标
+        else if (metadataId.startsWith('target_')) {
+          final targetId = metadataId.substring(7); // 移除 'target_' 前缀
+          // 如果已删除且不在当前 targets 中，可以清理
+          if (!existingTargetIds.contains(targetId)) {
+            keysToRemove.add(metadataId);
+            cleanedCount++;
+          }
+        }
+      }
+
+      // 批量删除
+      if (keysToRemove.isNotEmpty) {
+        for (var key in keysToRemove) {
+          syncMetadata.remove(key);
+        }
+        await TodoStorage.saveSyncMetadata(syncMetadata);
+        print('✅ [SyncService] 清理了 $cleanedCount 个已删除项的元数据');
+      } else {
+        print('ℹ️  [SyncService] 没有需要清理的元数据');
+      }
+    } catch (e) {
+      print('⚠️  [SyncService] 清理元数据失败: $e');
+      // 不抛出异常，清理失败不应影响同步流程
+    }
+  }
+
   /// 处理接收到的待办事项数据
-  Future<void> _handleTodosDataUpdate(
-      Map<String, dynamic> remoteData, String fromDeviceId) async {
-    print('🔄 [SyncService] 处理待办事项更新: 来自 $fromDeviceId');
+  Future<void> _handleTodosDataUpdate(Map<String, dynamic> remoteData,
+      String fromDeviceId, String? syncSessionId) async {
+    print('🔄 [SyncService] 处理待办事项更新: 来自 $fromDeviceId [会话: $syncSessionId]');
 
     try {
       // 🆕 尝试解压数据
@@ -1788,41 +2629,55 @@ class SyncService {
               );
             }
 
-            // 使用冲突解决器
-            final resolution = _conflictResolver.resolveTodoItemConflict(
-                localSyncableItem, remoteItem);
+            // 🆕 使用 Git-style 三方合并
+            final mergeResult = _gitMerger.merge<SyncableTodoItem>(
+              localSyncableItem,
+              remoteItem,
+              _currentDevice?.deviceId ?? 'unknown',
+            );
 
-            if (resolution.hasConflict) {
+            print(
+                '🔀 [GitMerge] ${remoteItem.title}: ${mergeResult.mergeType} - ${mergeResult.description}');
+
+            // 如果有冲突，记录
+            if (mergeResult.hasConflict) {
               conflictCount++;
-              print(
-                  '⚠️  [SyncService] 冲突: ${remoteItem.title} - ${resolution.resolution}');
             }
 
-            // 应用解决后的数据
-            if (resolution.resolvedData != null) {
-              final resolved = resolution.resolvedData!;
+            // 应用合并结果
+            if (mergeResult.needsUpdate && mergeResult.mergedData != null) {
+              final resolved = mergeResult.mergedData!;
 
-              // 保存数据
-              localTodos[resolved.id] = TodoItemData(
-                id: resolved.id,
-                title: resolved.title,
-                description: resolved.description,
-                isCompleted: resolved.isCompleted,
-                createdAt: resolved.createdAt,
-                listId: resolved.listId,
-              );
-
-              // 保存元数据
-              localSyncMetadata[resolved.id] = resolved.syncMetadata;
-
-              if (localSyncableItem == null) {
-                mergedItems++;
-                print('➕ [SyncService] 新增待办: ${resolved.title}');
+              // 🆕 检查是否已删除
+              if (resolved.syncMetadata.isDeleted) {
+                // 如果标记为删除，从本地移除
+                localTodos.remove(resolved.id);
+                localSyncMetadata.remove(resolved.id);
+                print('🗑️ [SyncService] 删除待办: ${resolved.title}');
+                hasChanges = true;
               } else {
-                updatedItems++;
-                print('🔄 [SyncService] 更新待办: ${resolved.title}');
+                // 保存数据
+                localTodos[resolved.id] = TodoItemData(
+                  id: resolved.id,
+                  title: resolved.title,
+                  description: resolved.description,
+                  isCompleted: resolved.isCompleted,
+                  createdAt: resolved.createdAt,
+                  listId: resolved.listId,
+                );
+
+                // 保存元数据
+                localSyncMetadata[resolved.id] = resolved.syncMetadata;
+
+                if (localSyncableItem == null) {
+                  mergedItems++;
+                  print('➕ [SyncService] 新增待办: ${resolved.title}');
+                } else {
+                  updatedItems++;
+                  print('🔄 [SyncService] 更新待办: ${resolved.title}');
+                }
+                hasChanges = true;
               }
-              hasChanges = true;
             }
           } catch (e) {
             print('❌ [SyncService] 处理待办项失败: ${remoteItem.id}, $e');
@@ -1869,39 +2724,54 @@ class SyncService {
               );
             }
 
-            // 使用冲突解决器
-            final resolution = _conflictResolver.resolveTodoListConflict(
-                localSyncableList, remoteList);
+            // 🆕 使用 Git-style 三方合并
+            final mergeResult = _gitMerger.merge<SyncableTodoList>(
+              localSyncableList,
+              remoteList,
+              _currentDevice?.deviceId ?? 'unknown',
+            );
 
-            if (resolution.hasConflict) {
+            print(
+                '🔀 [GitMerge] 列表${remoteList.name}: ${mergeResult.mergeType} - ${mergeResult.description}');
+
+            // 如果有冲突，记录
+            if (mergeResult.hasConflict) {
               conflictCount++;
-              print(
-                  '⚠️  [SyncService] 列表冲突: ${remoteList.name} - ${resolution.resolution}');
             }
 
-            // 应用解决后的数据
-            if (resolution.resolvedData != null) {
-              final resolved = resolution.resolvedData!;
+            // 应用合并结果
+            if (mergeResult.needsUpdate && mergeResult.mergedData != null) {
+              final resolved = mergeResult.mergedData!;
 
-              // 更新列表数据
-              localListMap[resolved.id] = TodoListData(
-                id: resolved.id,
-                name: resolved.name,
-                isExpanded: resolved.isExpanded,
-                colorValue: resolved.colorValue,
-                itemIds: resolved.itemIds,
-              );
-
-              // 保存列表的元数据
-              final listMetadataId = 'list_${resolved.id}';
-              localSyncMetadata[listMetadataId] = resolved.syncMetadata;
-
-              if (localSyncableList == null) {
-                print('➕ [SyncService] 新增列表: ${resolved.name}');
+              // 🆕 检查是否已删除
+              if (resolved.syncMetadata.isDeleted) {
+                // 如果标记为删除，从本地移除
+                localListMap.remove(resolved.id);
+                final listMetadataId = 'list_${resolved.id}';
+                localSyncMetadata.remove(listMetadataId);
+                print('🗑️ [SyncService] 删除列表: ${resolved.name}');
+                listHasChanges = true;
               } else {
-                print('🔄 [SyncService] 更新列表: ${resolved.name}');
+                // 更新列表数据
+                localListMap[resolved.id] = TodoListData(
+                  id: resolved.id,
+                  name: resolved.name,
+                  isExpanded: resolved.isExpanded,
+                  colorValue: resolved.colorValue,
+                  itemIds: resolved.itemIds,
+                );
+
+                // 保存列表的元数据
+                final listMetadataId = 'list_${resolved.id}';
+                localSyncMetadata[listMetadataId] = resolved.syncMetadata;
+
+                if (localSyncableList == null) {
+                  print('➕ [SyncService] 新增列表: ${resolved.name}');
+                } else {
+                  print('🔄 [SyncService] 更新列表: ${resolved.name}');
+                }
+                listHasChanges = true;
               }
-              listHasChanges = true;
             }
           } catch (e) {
             print('❌ [SyncService] 处理列表失败: ${remoteList.id}, $e');
@@ -1916,11 +2786,10 @@ class SyncService {
         }
       }
 
-      // 通知UI更新
+      // 通知UI更新 - 即使没有新增/更新项也要通知（可能有删除或其他变化）
       final totalItems = mergedItems + updatedItems;
-      if (totalItems > 0) {
-        _notifyDataUpdated('todos', fromDeviceId, totalItems);
-      }
+      print('📢 [SyncService] 通知待办数据更新: 新增=$mergedItems, 更新=$updatedItems');
+      _notifyDataUpdated('todos', fromDeviceId, totalItems);
     } catch (e, stack) {
       print('❌ [SyncService] 处理待办数据失败: $e');
       print('Stack: $stack');
@@ -1977,9 +2846,14 @@ class SyncService {
 
       for (final remoteLog in syncableLogs) {
         try {
-          // 🆕 改进的重复检测：使用时间窗口和内容匹配
-          // 考虑到网络延迟，同一事件可能在±2秒内
+          // 🆕 改进的重复检测：优先使用activityId，回退到时间窗口匹配
           final exists = existingLogs.any((log) {
+            // 如果activityId都存在，优先使用activityId进行精确匹配
+            if (log.activityId.isNotEmpty && remoteLog.activityId.isNotEmpty) {
+              return log.activityId == remoteLog.activityId;
+            }
+
+            // 回退方案：使用时间窗口和内容匹配（考虑网络延迟）
             final timeDiff = (log.startTime.millisecondsSinceEpoch -
                     remoteLog.startTime.millisecondsSinceEpoch)
                 .abs();
@@ -1989,18 +2863,51 @@ class SyncService {
 
           // 检查是否与本地当前活动相同
           final isLocalCurrentActivity = localCurrentActivity != null &&
-              (localCurrentActivity.startTime.millisecondsSinceEpoch -
-                          remoteLog.startTime.millisecondsSinceEpoch)
-                      .abs() <
-                  2000 &&
-              localCurrentActivity.name == remoteLog.name;
+              (
+                  // 优先使用activityId匹配
+                  (localCurrentActivity.activityId.isNotEmpty &&
+                          remoteLog.activityId.isNotEmpty &&
+                          localCurrentActivity.activityId ==
+                              remoteLog.activityId) ||
+                      // 回退方案：时间窗口匹配
+                      ((localCurrentActivity.startTime.millisecondsSinceEpoch -
+                                      remoteLog
+                                          .startTime.millisecondsSinceEpoch)
+                                  .abs() <
+                              2000 &&
+                          localCurrentActivity.name == remoteLog.name));
 
           if (!exists && !isLocalCurrentActivity) {
             // 如果是正在进行的活动（endTime为null），不保存为历史记录
-            // 而是通过冲突解决机制处理
+            // 而是添加到 _activeTimers 供UI显示和冲突解决使用
             if (remoteLog.endTime == null) {
+              print('⏸️  [SyncService] 检测到远程正在进行的活动: ${remoteLog.name}');
+
+              // 🆕 直接使用远程日志中的activityId，不再重新计算
+              // 这样确保跨设备activityId一致，计时器可以正确启动和停止
+              final activityId = remoteLog.activityId;
+              print('   远程activityId: $activityId');
+
+              final timerState = TimerState(
+                activityId: activityId,
+                activityName: remoteLog.name,
+                linkedTodoId: remoteLog.linkedTodoId,
+                linkedTodoTitle: remoteLog.linkedTodoTitle,
+                startTime: remoteLog.startTime,
+                currentDuration:
+                    DateTime.now().difference(remoteLog.startTime).inSeconds,
+                deviceId: fromDeviceId,
+                deviceName: _connectedDevicesMap[fromDeviceId]?.deviceName ??
+                    _serverService
+                        .getConnectedDevice(fromDeviceId)
+                        ?.deviceName ??
+                    '远程设备',
+              );
+
+              _activeTimers[fromDeviceId] = timerState;
               print(
-                  '⏸️  [SyncService] 检测到远程正在进行的活动，将通过冲突解决处理: ${remoteLog.name}');
+                  '✅ [SyncService] 已添加远程活动到计时器列表: ${timerState.activityName} (${timerState.deviceName})');
+
               // 正在进行的活动将通过 _resolveActiveTimerConflicts 处理
               continue;
             }
@@ -2048,10 +2955,16 @@ class SyncService {
       if (remoteOngoingActivities.isNotEmpty) {
         print('🔄 [SyncService] 触发活动冲突解决...');
         await _resolveActiveTimerConflicts(fromDeviceId);
-      }
 
-      // 发送数据更新事件
-      _notifyDataUpdated('timeLogs', fromDeviceId, mergedLogs);
+        // 🆕 冲突解决后，强制发送数据更新通知，确保UI刷新
+        // 无论 mergedLogs 是否为 0，都要通知UI当前活动可能已改变
+        print('📢 [SyncService] 冲突解决完成，发送UI更新通知');
+        _notifyDataUpdated(
+            'timeLogs', fromDeviceId, mergedLogs + ongoingActivitiesCount);
+      } else {
+        // 没有正在进行的活动，正常发送数据更新事件
+        _notifyDataUpdated('timeLogs', fromDeviceId, mergedLogs);
+      }
     } catch (e) {
       print('❌ [SyncService] 处理时间日志更新失败: $e');
     }
@@ -2059,64 +2972,139 @@ class SyncService {
 
   /// 处理接收到的目标数据
   Future<void> _handleTargetsDataUpdate(
-      List<dynamic> remoteTargets, String fromDeviceId) async {
-    print('🔄 [SyncService] 处理目标更新: 来自 $fromDeviceId');
+      dynamic remoteData, String fromDeviceId, String? syncSessionId) async {
+    print('🔄 [SyncService] 处理目标更新: 来自 $fromDeviceId [会话: $syncSessionId]');
+    print('📦 [SyncService] 接收到的原始数据类型: ${remoteData.runtimeType}');
 
     try {
+      // 🆕 尝试解压数据（与todos保持一致）
+      Map<String, dynamic> actualData;
+      if (remoteData is Map<String, dynamic> &&
+          remoteData.containsKey('compressed')) {
+        print('🔄 [SyncService] 检测到压缩数据，开始解压...');
+        final decompressed = SyncCompression.decompressJson(remoteData);
+        if (decompressed == null) {
+          print('❌ [SyncService] 目标数据解压失败');
+          _handleError(SyncError(
+            type: SyncErrorType.dataCorrupted,
+            message: '目标数据解压失败',
+            details: '来源: $fromDeviceId',
+          ));
+          return;
+        }
+        actualData = decompressed;
+        print('✅ [SyncService] 目标数据解压成功');
+      } else if (remoteData is Map<String, dynamic> &&
+          remoteData.containsKey('data')) {
+        print('📦 [SyncService] 使用未压缩数据');
+        actualData = remoteData['data'] as Map<String, dynamic>;
+      } else if (remoteData is Map<String, dynamic>) {
+        print('📦 [SyncService] 直接使用Map数据');
+        actualData = remoteData;
+      } else {
+        print('⚠️  [SyncService] 使用旧格式（兼容）');
+        // 兼容旧格式：直接是列表
+        actualData = {'items': remoteData as List<dynamic>};
+      }
+
       final storage = TargetStorage();
       final localTargets = await storage.loadTargets();
+      final localSyncMetadata = await TodoStorage.getSyncMetadata();
 
-      print('📦 [SyncService] 收到 ${remoteTargets.length} 个目标');
+      // 从actualData中提取items（与todos保持一致）
+      final remoteTargetsJson = actualData['items'] ?? actualData;
+      final actualTargets =
+          (remoteTargetsJson is List) ? remoteTargetsJson : [remoteTargetsJson];
+
+      print('📦 [SyncService] 收到 ${actualTargets.length} 个目标');
 
       int mergedCount = 0;
+      int updatedCount = 0;
+      int conflictCount = 0;
       bool hasChanges = false;
+      final localTargetMap = {for (var t in localTargets) t.id: t};
 
-      for (final remoteTargetJson in remoteTargets) {
+      for (final remoteTargetJson in actualTargets) {
         try {
-          final remoteSyncable = SyncableTarget.fromJson(remoteTargetJson);
+          final remoteTarget = SyncableTarget.fromJson(remoteTargetJson);
 
-          // 检查本地是否已存在该目标
-          final existingIndex =
-              localTargets.indexWhere((t) => t.id == remoteSyncable.id);
+          // 构建本地的 SyncableTarget（如果存在）
+          SyncableTarget? localSyncableTarget;
+          final localTarget = localTargetMap[remoteTarget.id];
+          if (localTarget != null) {
+            final targetMetadataId = 'target_${localTarget.id}';
+            final localMetadata = localSyncMetadata[targetMetadataId] ??
+                SyncMetadata.create(_currentDevice?.deviceId ?? 'unknown');
+            localSyncableTarget = SyncableTarget(
+              id: localTarget.id,
+              name: localTarget.name,
+              type: localTarget.type.index,
+              period: localTarget.period.index,
+              targetSeconds: localTarget.targetSeconds,
+              linkedTodoIds: localTarget.linkedTodoIds,
+              linkedListIds: localTarget.linkedListIds,
+              createdAt: localTarget.createdAt,
+              isActive: localTarget.isActive,
+              colorValue:
+                  localTarget.color.value, // ignore: deprecated_member_use
+              syncMetadata: localMetadata,
+            );
+          }
 
-          if (existingIndex == -1) {
-            // 本地不存在，直接添加
-            localTargets.add(Target(
-              id: remoteSyncable.id,
-              name: remoteSyncable.name,
-              type: TargetType.values[remoteSyncable.type],
-              period: TimePeriod.values[remoteSyncable.period],
-              targetSeconds: remoteSyncable.targetSeconds,
-              linkedTodoIds: remoteSyncable.linkedTodoIds,
-              linkedListIds: remoteSyncable.linkedListIds,
-              createdAt: remoteSyncable.createdAt,
-              isActive: remoteSyncable.isActive,
-              color: Color(remoteSyncable.colorValue),
-            ));
-            mergedCount++;
-            hasChanges = true;
-            print('➕ [SyncService] 新增目标: ${remoteSyncable.name}');
-          } else {
-            // 本地存在，检查是否需要更新（使用元数据时间戳）
-            final localTarget = localTargets[existingIndex];
-            if (remoteSyncable.syncMetadata.lastModifiedAt
-                .isAfter(localTarget.createdAt)) {
-              localTargets[existingIndex] = Target(
-                id: remoteSyncable.id,
-                name: remoteSyncable.name,
-                type: TargetType.values[remoteSyncable.type],
-                period: TimePeriod.values[remoteSyncable.period],
-                targetSeconds: remoteSyncable.targetSeconds,
-                linkedTodoIds: remoteSyncable.linkedTodoIds,
-                linkedListIds: remoteSyncable.linkedListIds,
-                createdAt: remoteSyncable.createdAt,
-                isActive: remoteSyncable.isActive,
-                color: Color(remoteSyncable.colorValue),
-              );
+          // 🆕 使用 Git-style 三方合并
+          final mergeResult = _gitMerger.merge<SyncableTarget>(
+            localSyncableTarget,
+            remoteTarget,
+            _currentDevice?.deviceId ?? 'unknown',
+          );
+
+          print(
+              '🔀 [GitMerge] 目标${remoteTarget.name}: ${mergeResult.mergeType} - ${mergeResult.description}');
+
+          // 如果有冲突，记录
+          if (mergeResult.hasConflict) {
+            conflictCount++;
+          }
+
+          // 应用合并结果
+          if (mergeResult.needsUpdate && mergeResult.mergedData != null) {
+            final resolved = mergeResult.mergedData!;
+
+            // 🆕 检查是否已删除
+            if (resolved.syncMetadata.isDeleted) {
+              // 如果标记为删除，从本地移除
+              localTargetMap.remove(resolved.id);
+              final targetMetadataId = 'target_${resolved.id}';
+              localSyncMetadata.remove(targetMetadataId);
+              print('🗑️ [SyncService] 删除目标: ${resolved.name}');
               hasChanges = true;
-              print('🔄 [SyncService] 更新目标: ${remoteSyncable.name}');
             } else {
-              print('⏭️  [SyncService] 跳过旧版本目标: ${remoteSyncable.name}');
+              // 更新目标数据
+              localTargetMap[resolved.id] = Target(
+                id: resolved.id,
+                name: resolved.name,
+                type: TargetType.values[resolved.type],
+                period: TimePeriod.values[resolved.period],
+                targetSeconds: resolved.targetSeconds,
+                linkedTodoIds: resolved.linkedTodoIds,
+                linkedListIds: resolved.linkedListIds,
+                createdAt: resolved.createdAt,
+                isActive: resolved.isActive,
+                color: Color(resolved.colorValue),
+              );
+
+              // 保存目标的元数据
+              final targetMetadataId = 'target_${resolved.id}';
+              localSyncMetadata[targetMetadataId] = resolved.syncMetadata;
+
+              if (localSyncableTarget == null) {
+                mergedCount++;
+                print('➕ [SyncService] 新增目标: ${resolved.name}');
+              } else {
+                updatedCount++;
+                print('🔄 [SyncService] 更新目标: ${resolved.name}');
+              }
+              hasChanges = true;
             }
           }
         } catch (e) {
@@ -2124,31 +3112,37 @@ class SyncService {
         }
       }
 
-      // 保存更新后的目标列表
+      // 保存更新后的目标列表和元数据
       if (hasChanges) {
-        await storage.saveTargets(localTargets);
+        await storage.saveTargets(localTargetMap.values.toList());
+        await TodoStorage.saveSyncMetadata(localSyncMetadata);
         print('💾 [SyncService] 目标数据已保存');
+        print('⚠️  [SyncService] 解决了 $conflictCount 个冲突');
       }
 
       // 记录历史
       final device = _serverService.getConnectedDevice(fromDeviceId);
       if (device != null) {
+        final totalChanges = mergedCount + updatedCount;
         await _historyService.recordMerge(
           deviceId: fromDeviceId,
           deviceName: device.deviceName,
           dataType: 'targets',
-          itemCount: mergedCount,
-          description: '成功合并 $mergedCount 个目标',
+          itemCount: totalChanges,
+          description: '成功合并 $mergedCount 个新目标，更新 $updatedCount 个目标',
           success: true,
         );
       }
 
-      print('✅ [SyncService] 目标更新完成: 合并 $mergedCount 个');
+      print('✅ [SyncService] 目标更新完成: 新增 $mergedCount 个，更新 $updatedCount 个');
 
-      // 发送数据更新事件
-      _notifyDataUpdated('targets', fromDeviceId, mergedCount);
-    } catch (e) {
+      // 发送数据更新事件 - 始终通知UI更新（即使没有变化也要刷新显示）
+      final totalChanges = mergedCount + updatedCount;
+      print('📢 [SyncService] 通知目标数据更新: 新增=$mergedCount, 更新=$updatedCount');
+      _notifyDataUpdated('targets', fromDeviceId, totalChanges);
+    } catch (e, stack) {
       print('❌ [SyncService] 处理目标更新失败: $e');
+      print('Stack: $stack');
     }
   }
 
@@ -2184,6 +3178,115 @@ class SyncService {
   void _stopMemoryCleanup() {
     _memoryCleanupTimer?.cancel();
     _memoryCleanupTimer = null;
+  }
+
+  /// 加载本地活动计时器
+  Future<void> _loadLocalActiveTimer() async {
+    if (_currentDevice == null) return;
+
+    print('📂 [SyncService] 加载本地活动计时器...');
+
+    try {
+      // 从 TimeLoggerStorage 加载当前正在运行的活动
+      final currentActivity = await TimeLoggerStorage.getCurrentActivity();
+
+      if (currentActivity != null && currentActivity.endTime == null) {
+        print('✅ [SyncService] 发现本地正在运行的活动: ${currentActivity.name}');
+        print('   activityId: ${currentActivity.activityId}');
+
+        // 计算当前持续时间
+        final duration =
+            DateTime.now().difference(currentActivity.startTime).inSeconds;
+
+        // 创建 TimerState（直接使用存储的 activityId）
+        final timerState = TimerState(
+          activityId: currentActivity.activityId,
+          activityName: currentActivity.name,
+          linkedTodoId: currentActivity.linkedTodoId,
+          linkedTodoTitle: currentActivity.linkedTodoTitle,
+          deviceId: _currentDevice!.deviceId,
+          deviceName: _currentDevice!.deviceName,
+          startTime: currentActivity.startTime,
+          currentDuration: duration,
+        );
+
+        // 添加到活动计时器
+        _activeTimers[_currentDevice!.deviceId] = timerState;
+
+        // 通知更新
+        _notifyActiveTimersChanged();
+
+        print('✅ [SyncService] 本地活动计时器已加载');
+      } else {
+        print('ℹ️  [SyncService] 本地没有正在运行的活动');
+      }
+    } catch (e) {
+      print('❌ [SyncService] 加载本地活动计时器失败: $e');
+    }
+  }
+
+  /// 启动活动计时器更新
+  void _startActiveTimersUpdate() {
+    _stopActiveTimersUpdate(); // 确保没有重复的定时器
+
+    print('⏱️  [SyncService] 启动活动计时器更新定时器');
+    _activeTimersUpdateTimer =
+        Timer.periodic(_activeTimersUpdateInterval, (timer) {
+      _updateActiveTimers();
+    });
+  }
+
+  /// 停止活动计时器更新
+  void _stopActiveTimersUpdate() {
+    _activeTimersUpdateTimer?.cancel();
+    _activeTimersUpdateTimer = null;
+  }
+
+  /// 更新活动计时器的 currentDuration
+  void _updateActiveTimers() {
+    if (_activeTimers.isEmpty) {
+      return;
+    }
+
+    // 🔒 防止重入（如果上次更新还未完成）
+    if (_isUpdatingActiveTimers) {
+      return;
+    }
+    _isUpdatingActiveTimers = true;
+
+    try {
+      bool hasUpdates = false;
+      final now = DateTime.now();
+
+      // 🆕 直接在Map上增量更新，避免清空重建
+      for (final entry in _activeTimers.entries.toList()) {
+        final deviceId = entry.key;
+        final timer = entry.value;
+        final newDuration = now.difference(timer.startTime).inSeconds;
+
+        // 只有当时间发生变化时才更新
+        if (newDuration != timer.currentDuration) {
+          _activeTimers[deviceId] =
+              timer.copyWith(currentDuration: newDuration);
+          hasUpdates = true;
+
+          // 🆕 每30秒输出一次详细日志，帮助调试长时间运行的计时器
+          if (newDuration % 30 == 0) {
+            print('⏱️  [SyncService] 计时器更新: ${timer.activityName}');
+            print('   设备: ${timer.deviceName} (${timer.deviceId})');
+            print(
+                '   当前时长: $newDuration 秒 (${(newDuration / 60).toStringAsFixed(1)} 分钟)');
+          }
+        }
+      }
+
+      // 只有有实际时间更新时才通知UI
+      if (hasUpdates) {
+        _notifyActiveTimersChanged();
+      }
+    } finally {
+      _isUpdatingActiveTimers = false;
+    }
   }
 
   /// 执行内存清理
@@ -2418,11 +3521,6 @@ class SyncService {
         '   总同步: ${metrics.totalSyncs} (成功: ${metrics.successfulSyncs}, 失败: ${metrics.failedSyncs})');
   }
 
-  /// 获取设备同步性能指标
-  _SyncPerformanceMetrics? getSyncPerformanceMetrics(String deviceId) {
-    return _performanceMetrics[deviceId];
-  }
-
   // ==================== 🆕 改进的同步方法 ====================
 
   /// 🆕 带队列和重试的同步方法
@@ -2462,6 +3560,14 @@ class SyncService {
     _connectionHealthCheckTimer = null;
     _memoryCleanupTimer?.cancel();
     _memoryCleanupTimer = null;
+    _activeTimersUpdateTimer?.cancel();
+    _activeTimersUpdateTimer = null;
+
+    // 🆕 清理设备断连定时器
+    for (final timer in _deviceDisconnectTimers.values) {
+      timer.cancel();
+    }
+    _deviceDisconnectTimers.clear();
 
     // 释放服务
     _discoveryService.dispose();

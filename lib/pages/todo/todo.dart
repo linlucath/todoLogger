@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
+import 'dart:async';
 import 'add_todo_dialog.dart';
 import 'add_list_dialog.dart';
 import '../../services/todo_storage.dart';
+import '../../services/sync_service.dart';
 
 // TodoItem 数据模型（单个 Todo）
 class TodoItem {
@@ -10,7 +12,7 @@ class TodoItem {
   String? description;
   bool isCompleted;
   DateTime createdAt;
-  String? listId; // 所属列表ID（可选，null 表示独立 Todo）
+  String? listId; // 所属列表ID
 
   // 构造函数
   TodoItem({
@@ -438,7 +440,9 @@ class TodoListWidget extends StatelessWidget {
 
 // Todo 页面主组件
 class TodoPage extends StatefulWidget {
-  const TodoPage({super.key});
+  final SyncService? syncService; // 🆕 添加同步服务
+
+  const TodoPage({super.key, this.syncService});
 
   @override
   State<TodoPage> createState() => _TodoPageState();
@@ -447,11 +451,33 @@ class TodoPage extends StatefulWidget {
 class _TodoPageState extends State<TodoPage> {
   final List<TodoList> _todoLists = [];
   bool _isLoading = true;
+  StreamSubscription? _dataUpdateSubscription; // 🆕 监听同步数据更新
 
   @override
   void initState() {
     super.initState();
     _loadData();
+    _setupSyncListener(); // 🆕 设置同步监听
+  }
+
+  @override
+  void dispose() {
+    _dataUpdateSubscription?.cancel(); // 🆕 取消监听
+    super.dispose();
+  }
+
+  // 🆕 设置同步监听器
+  void _setupSyncListener() {
+    if (widget.syncService != null) {
+      _dataUpdateSubscription =
+          widget.syncService!.dataUpdatedStream.listen((event) {
+        // 当收到 todos 数据更新时刷新页面
+        if (event.dataType == 'todos' && mounted) {
+          debugPrint('🔄 [TodoPage] 收到远程数据更新，刷新页面');
+          _loadData();
+        }
+      });
+    }
   }
 
   // 从存储加载数据
@@ -601,6 +627,22 @@ class _TodoPageState extends State<TodoPage> {
 
     debugPrint(
         '✅ TODO data saved: ${itemsMap.length} items, ${listsData.length} lists');
+
+    // 🆕 触发同步到所有已连接设备
+    _triggerSync();
+  }
+
+  // 🆕 触发同步到所有已连接设备
+  void _triggerSync() {
+    if (widget.syncService != null && widget.syncService!.isEnabled) {
+      final connectedDevices = widget.syncService!.connectedDevices;
+      if (connectedDevices.isNotEmpty) {
+        debugPrint('🔄 [TodoPage] 触发同步到 ${connectedDevices.length} 个设备');
+        for (var device in connectedDevices) {
+          widget.syncService!.syncAllDataToDevice(device.deviceId);
+        }
+      }
+    }
   }
 
   void _showAddOptions() {
@@ -686,6 +728,17 @@ class _TodoPageState extends State<TodoPage> {
   }
 
   void _deleteTodo(String listId, String todoId) async {
+    // 🆕 标记为已删除（用于同步）
+    final syncMetadata = await TodoStorage.getSyncMetadata();
+    final deviceId = widget.syncService?.currentDevice?.deviceId ?? 'local';
+    final itemMetadata = syncMetadata[todoId];
+    if (itemMetadata != null) {
+      // 更新元数据为已删除状态
+      syncMetadata[todoId] = itemMetadata.markDeleted(deviceId);
+      await TodoStorage.saveSyncMetadata(syncMetadata);
+      debugPrint('🗑️ [TodoPage] 标记待办项为已删除: $todoId');
+    }
+
     setState(() {
       final list = _todoLists.firstWhere((l) => l.id == listId);
       list.items.removeWhere((t) => t.id == todoId);
@@ -743,6 +796,31 @@ class _TodoPageState extends State<TodoPage> {
           ),
           TextButton(
             onPressed: () async {
+              // 🆕 标记列表为已删除（用于同步）
+              final syncMetadata = await TodoStorage.getSyncMetadata();
+              final deviceId =
+                  widget.syncService?.currentDevice?.deviceId ?? 'local';
+              final listMetadataId = 'list_$listId';
+              final listMetadata = syncMetadata[listMetadataId];
+              if (listMetadata != null) {
+                // 更新元数据为已删除状态
+                syncMetadata[listMetadataId] =
+                    listMetadata.markDeleted(deviceId);
+                await TodoStorage.saveSyncMetadata(syncMetadata);
+                debugPrint('🗑️ [TodoPage] 标记列表为已删除: $listId');
+              }
+
+              // 🆕 同时标记列表中的所有待办项为已删除
+              final list = _todoLists.firstWhere((l) => l.id == listId);
+              for (var item in list.items) {
+                final itemMetadata = syncMetadata[item.id];
+                if (itemMetadata != null) {
+                  syncMetadata[item.id] = itemMetadata.markDeleted(deviceId);
+                  debugPrint('🗑️ [TodoPage] 标记待办项为已删除: ${item.id}');
+                }
+              }
+              await TodoStorage.saveSyncMetadata(syncMetadata);
+
               setState(() {
                 _todoLists.removeWhere((l) => l.id == listId);
               });

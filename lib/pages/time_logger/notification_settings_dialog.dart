@@ -72,7 +72,7 @@ class _NotificationSettingsDialogState
               title: const Text('启用后台通知'),
               subtitle: const Text('在应用切换到后台时定期提醒计时状态'),
               value: _notificationsEnabled,
-              activeTrackColor: const Color(0xFF6C63FF).withOpacity(0.5),
+              activeTrackColor: const Color(0xFF6C63FF).withValues(alpha: 0.5),
               activeThumbColor: const Color(0xFF6C63FF),
               onChanged: (value) {
                 setState(() {
@@ -106,9 +106,11 @@ class _NotificationSettingsDialogState
                 return RadioListTile<int>(
                   title: Text(_getIntervalText(minutes)),
                   value: minutes,
+                  // ignore: deprecated_member_use
                   groupValue: _notificationInterval,
                   toggleable: false,
                   activeColor: const Color(0xFF6C63FF),
+                  // ignore: deprecated_member_use
                   onChanged: (value) {
                     if (value != null) {
                       setState(() {
@@ -139,7 +141,7 @@ class _NotificationSettingsDialogState
               title: const Text('通知声音'),
               subtitle: const Text('播放通知声音'),
               value: _notificationSound,
-              activeTrackColor: const Color(0xFF6C63FF).withOpacity(0.5),
+              activeTrackColor: const Color(0xFF6C63FF).withValues(alpha: 0.5),
               activeThumbColor: const Color(0xFF6C63FF),
               secondary: const Icon(Icons.volume_up),
               onChanged: _notificationsEnabled
@@ -156,7 +158,7 @@ class _NotificationSettingsDialogState
               title: const Text('通知震动'),
               subtitle: const Text('震动提醒'),
               value: _notificationVibration,
-              activeTrackColor: const Color(0xFF6C63FF).withOpacity(0.5),
+              activeTrackColor: const Color(0xFF6C63FF).withValues(alpha: 0.5),
               activeThumbColor: const Color(0xFF6C63FF),
               secondary: const Icon(Icons.vibration),
               onChanged: _notificationsEnabled
@@ -197,7 +199,7 @@ class _NotificationSettingsDialogState
                   ? '${_doNotDisturbStartHour.toString().padLeft(2, '0')}:00 - ${_doNotDisturbEndHour.toString().padLeft(2, '0')}:00'
                   : '未启用'),
               value: _doNotDisturbEnabled,
-              activeTrackColor: const Color(0xFF6C63FF).withOpacity(0.5),
+              activeTrackColor: const Color(0xFF6C63FF).withValues(alpha: 0.5),
               activeThumbColor: const Color(0xFF6C63FF),
               secondary: const Icon(Icons.bedtime),
               onChanged: _notificationsEnabled

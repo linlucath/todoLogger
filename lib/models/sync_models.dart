@@ -67,7 +67,7 @@ class DeviceInfo {
     // 1️⃣ 持久化设备ID - 确保同一设备始终使用相同ID
     String? deviceId = prefs.getString('sync_device_id');
     if (deviceId == null) {
-      final uuid = const Uuid();
+      const uuid = Uuid();
       deviceId = uuid.v4();
       await prefs.setString('sync_device_id', deviceId);
       print('🆕 [DeviceInfo] 生成新设备ID: $deviceId');
@@ -163,6 +163,7 @@ class SyncMessage {
   final String? senderId;
   final DateTime timestamp;
   final Map<String, dynamic>? data;
+  final String? syncSessionId; // 用于防止循环同步
 
   SyncMessage({
     String? messageId,
@@ -170,6 +171,7 @@ class SyncMessage {
     this.senderId,
     DateTime? timestamp,
     this.data,
+    this.syncSessionId,
   })  : messageId = messageId ?? const Uuid().v4(),
         timestamp = timestamp ?? DateTime.now();
 
@@ -181,6 +183,7 @@ class SyncMessage {
       senderId: json['senderId'] as String?,
       timestamp: DateTime.parse(json['timestamp'] as String),
       data: json['data'] as Map<String, dynamic>?,
+      syncSessionId: json['syncSessionId'] as String?,
     );
   }
 
@@ -191,6 +194,7 @@ class SyncMessage {
       'senderId': senderId,
       'timestamp': timestamp.toIso8601String(),
       'data': data,
+      if (syncSessionId != null) 'syncSessionId': syncSessionId,
     };
   }
 
@@ -243,10 +247,12 @@ class SyncMessage {
 
   /// 创建数据更新消息
   static SyncMessage dataUpdate(
-      String deviceId, String dataType, dynamic updateData) {
+      String deviceId, String dataType, dynamic updateData,
+      {String? syncSessionId}) {
     return SyncMessage(
       type: SyncMessageType.dataUpdate,
       senderId: deviceId,
+      syncSessionId: syncSessionId,
       data: {
         'dataType': dataType,
         'data': updateData,
@@ -255,26 +261,40 @@ class SyncMessage {
   }
 
   /// 创建计时开始消息
-  static SyncMessage timerStart(
-      String deviceId, String todoId, DateTime startTime) {
+  static SyncMessage timerStart({
+    required String deviceId,
+    required String activityId,
+    required String activityName,
+    required DateTime startTime,
+    String? linkedTodoId,
+    String? linkedTodoTitle,
+  }) {
     return SyncMessage(
       type: SyncMessageType.timerStart,
       senderId: deviceId,
       data: {
-        'todoId': todoId,
+        'activityId': activityId,
+        'activityName': activityName,
+        'linkedTodoId': linkedTodoId,
+        'linkedTodoTitle': linkedTodoTitle,
         'startTime': startTime.toIso8601String(),
       },
     );
   }
 
   /// 创建计时停止消息
-  static SyncMessage timerStop(String deviceId, String todoId,
-      DateTime startTime, DateTime endTime, int duration) {
+  static SyncMessage timerStop({
+    required String deviceId,
+    required String activityId,
+    required DateTime startTime,
+    required DateTime endTime,
+    required int duration,
+  }) {
     return SyncMessage(
       type: SyncMessageType.timerStop,
       senderId: deviceId,
       data: {
-        'todoId': todoId,
+        'activityId': activityId,
         'startTime': startTime.toIso8601String(),
         'endTime': endTime.toIso8601String(),
         'duration': duration,
@@ -283,13 +303,16 @@ class SyncMessage {
   }
 
   /// 创建计时更新消息
-  static SyncMessage timerUpdate(
-      String deviceId, String todoId, int currentDuration) {
+  static SyncMessage timerUpdate({
+    required String deviceId,
+    required String activityId,
+    required int currentDuration,
+  }) {
     return SyncMessage(
       type: SyncMessageType.timerUpdate,
       senderId: deviceId,
       data: {
-        'todoId': todoId,
+        'activityId': activityId,
         'currentDuration': currentDuration,
       },
     );
@@ -306,17 +329,22 @@ class SyncMessage {
 }
 
 /// 计时状态
+/// 重新设计：activityId 作为唯一标识，todoId 作为可选的关联字段
 class TimerState {
-  final String todoId;
-  final String todoTitle;
+  final String activityId; // 活动的唯一ID
+  final String activityName; // 活动名称
+  final String? linkedTodoId; // 可选：关联的Todo ID
+  final String? linkedTodoTitle; // 可选：关联的Todo标题
   final DateTime startTime;
   final int currentDuration; // 秒
-  final String deviceId;
-  final String deviceName;
+  final String deviceId; // 运行此计时器的设备ID
+  final String deviceName; // 运行此计时器的设备名称
 
   TimerState({
-    required this.todoId,
-    required this.todoTitle,
+    required this.activityId,
+    required this.activityName,
+    this.linkedTodoId,
+    this.linkedTodoTitle,
     required this.startTime,
     required this.currentDuration,
     required this.deviceId,
@@ -325,8 +353,10 @@ class TimerState {
 
   factory TimerState.fromJson(Map<String, dynamic> json) {
     return TimerState(
-      todoId: json['todoId'] as String,
-      todoTitle: json['todoTitle'] as String,
+      activityId: json['activityId'] as String,
+      activityName: json['activityName'] as String,
+      linkedTodoId: json['linkedTodoId'] as String?,
+      linkedTodoTitle: json['linkedTodoTitle'] as String?,
       startTime: DateTime.parse(json['startTime'] as String),
       currentDuration: json['currentDuration'] as int,
       deviceId: json['deviceId'] as String,
@@ -336,8 +366,10 @@ class TimerState {
 
   Map<String, dynamic> toJson() {
     return {
-      'todoId': todoId,
-      'todoTitle': todoTitle,
+      'activityId': activityId,
+      'activityName': activityName,
+      'linkedTodoId': linkedTodoId,
+      'linkedTodoTitle': linkedTodoTitle,
       'startTime': startTime.toIso8601String(),
       'currentDuration': currentDuration,
       'deviceId': deviceId,
@@ -346,16 +378,20 @@ class TimerState {
   }
 
   TimerState copyWith({
-    String? todoId,
-    String? todoTitle,
+    String? activityId,
+    String? activityName,
+    String? linkedTodoId,
+    String? linkedTodoTitle,
     DateTime? startTime,
     int? currentDuration,
     String? deviceId,
     String? deviceName,
   }) {
     return TimerState(
-      todoId: todoId ?? this.todoId,
-      todoTitle: todoTitle ?? this.todoTitle,
+      activityId: activityId ?? this.activityId,
+      activityName: activityName ?? this.activityName,
+      linkedTodoId: linkedTodoId ?? this.linkedTodoId,
+      linkedTodoTitle: linkedTodoTitle ?? this.linkedTodoTitle,
       startTime: startTime ?? this.startTime,
       currentDuration: currentDuration ?? this.currentDuration,
       deviceId: deviceId ?? this.deviceId,

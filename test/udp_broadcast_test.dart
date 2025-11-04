@@ -30,20 +30,20 @@ void main() async {
       includeLinkLocal: false,
     );
 
-    print('发现 ${interfaces.length} 个网络接口:');
+    // print('发现 ${interfaces.length} 个网络接口:');
     String? localIp;
 
     for (var interface in interfaces) {
-      print('\n接口名称: ${interface.name}');
+      // print('\n接口名称: ${interface.name}');
       for (var addr in interface.addresses) {
-        print('  地址: ${addr.address}');
-        print('  回环: ${addr.isLoopback}');
-        print('  链路本地: ${addr.isLinkLocal}');
-        print('  组播: ${addr.isMulticast}');
+        // print('  地址: ${addr.address}');
+        // print('  回环: ${addr.isLoopback}');
+        // print('  链路本地: ${addr.isLinkLocal}');
+        // print('  组播: ${addr.isMulticast}');
 
         if (!addr.isLoopback && !addr.isLinkLocal) {
           localIp = addr.address;
-          print('  ✅ 选择此地址');
+          // print('  ✅ 选择此地址');
         }
       }
     }

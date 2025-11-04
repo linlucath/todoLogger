@@ -1,12 +1,17 @@
 import 'package:flutter/material.dart';
+import 'dart:async';
 import 'models.dart';
 import 'target_storage.dart';
 import 'target_calculator.dart' as target_calc;
 import 'target_edit_dialog.dart';
+import '../../services/sync_service.dart';
+import '../../services/todo_storage.dart'; // 🆕 导入 TodoStorage 用于同步元数据
 
 /// Target 主页面
 class TargetPage extends StatefulWidget {
-  const TargetPage({super.key});
+  final SyncService? syncService; // 🆕 添加同步服务
+
+  const TargetPage({super.key, this.syncService});
 
   @override
   State<TargetPage> createState() => _TargetPageState();
@@ -20,11 +25,33 @@ class _TargetPageState extends State<TargetPage> {
   List<Target> _targets = [];
   Map<String, TargetProgress> _progressMap = {};
   bool _isLoading = true;
+  StreamSubscription? _dataUpdateSubscription; // 🆕 监听同步数据更新
 
   @override
   void initState() {
     super.initState();
     _loadTargets();
+    _setupSyncListener(); // 🆕 设置同步监听
+  }
+
+  @override
+  void dispose() {
+    _dataUpdateSubscription?.cancel(); // 🆕 取消监听
+    super.dispose();
+  }
+
+  // 🆕 设置同步监听器
+  void _setupSyncListener() {
+    if (widget.syncService != null) {
+      _dataUpdateSubscription =
+          widget.syncService!.dataUpdatedStream.listen((event) {
+        // 当收到 targets 数据更新时刷新页面
+        if (event.dataType == 'targets' && mounted) {
+          debugPrint('🔄 [TargetPage] 收到远程数据更新，刷新页面');
+          _loadTargets();
+        }
+      });
+    }
   }
 
   /// 加载所有目标
@@ -62,6 +89,7 @@ class _TargetPageState extends State<TargetPage> {
     if (result != null) {
       await _storage.addTarget(result, _targets);
       await _loadTargets();
+      _triggerSync(); // 🆕 触发同步
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('目标 "${result.name}" 已添加')),
@@ -80,6 +108,7 @@ class _TargetPageState extends State<TargetPage> {
     if (result != null) {
       await _storage.updateTarget(result, _targets);
       await _loadTargets();
+      _triggerSync(); // 🆕 触发同步
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('目标 "${result.name}" 已更新')),
@@ -110,8 +139,20 @@ class _TargetPageState extends State<TargetPage> {
     );
 
     if (confirmed == true) {
+      // 🆕 标记目标为已删除（用于同步）
+      final syncMetadata = await TodoStorage.getSyncMetadata();
+      final deviceId = widget.syncService?.currentDevice?.deviceId ?? 'local';
+      final targetMetadataId = 'target_${target.id}';
+      final targetMetadata = syncMetadata[targetMetadataId];
+      if (targetMetadata != null) {
+        syncMetadata[targetMetadataId] = targetMetadata.markDeleted(deviceId);
+        await TodoStorage.saveSyncMetadata(syncMetadata);
+        debugPrint('🗑️ [TargetPage] 标记目标为已删除: ${target.id}');
+      }
+
       await _storage.deleteTarget(target.id, _targets);
       await _loadTargets();
+      _triggerSync(); // 🆕 触发同步
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('目标 "${target.name}" 已删除')),
@@ -124,6 +165,20 @@ class _TargetPageState extends State<TargetPage> {
   Future<void> _toggleTargetActive(Target target) async {
     await _storage.toggleTargetActive(target.id, _targets);
     await _loadTargets();
+    _triggerSync(); // 🆕 触发同步
+  }
+
+  // 🆕 触发同步到所有已连接设备
+  void _triggerSync() {
+    if (widget.syncService != null && widget.syncService!.isEnabled) {
+      final connectedDevices = widget.syncService!.connectedDevices;
+      if (connectedDevices.isNotEmpty) {
+        debugPrint('🔄 [TargetPage] 触发同步到 ${connectedDevices.length} 个设备');
+        for (var device in connectedDevices) {
+          widget.syncService!.syncAllDataToDevice(device.deviceId);
+        }
+      }
+    }
   }
 
   @override

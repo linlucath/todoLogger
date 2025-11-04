@@ -51,6 +51,17 @@ class SyncClientService {
       return false;
     }
 
+    // 验证IP地址和端口
+    if (_remoteDevice!.ipAddress.isEmpty) {
+      print('❌ [SyncClient] IP地址为空');
+      return false;
+    }
+
+    if (_remoteDevice!.port <= 0 || _remoteDevice!.port > 65535) {
+      print('❌ [SyncClient] 端口无效: ${_remoteDevice!.port}');
+      return false;
+    }
+
     try {
       final wsUrl =
           'ws://${_remoteDevice!.ipAddress}:${_remoteDevice!.port}/ws';
@@ -59,8 +70,15 @@ class SyncClientService {
       print('🔍 [SyncClient] 目标IP: ${_remoteDevice!.ipAddress}');
       print('🔍 [SyncClient] 目标端口: ${_remoteDevice!.port}');
 
+      // 验证URL格式
+      final uri = Uri.parse(wsUrl);
+      if (!uri.hasScheme || !uri.hasAuthority) {
+        print('❌ [SyncClient] URL格式无效: $wsUrl');
+        return false;
+      }
+
       print('⏳ [SyncClient] 创建WebSocket连接...');
-      _channel = WebSocketChannel.connect(Uri.parse(wsUrl));
+      _channel = WebSocketChannel.connect(uri);
 
       // 等待连接建立
       print('⏳ [SyncClient] 等待连接就绪...');
@@ -84,6 +102,21 @@ class SyncClientService {
       print('🎉 [SyncClient] 连接成功: ${_remoteDevice!.deviceName}');
 
       return true;
+    } on ArgumentError catch (e) {
+      print('❌ [SyncClient] URL参数错误: $e');
+      print('❌ [SyncClient] 可能原因: IP地址或端口格式不正确');
+      print(
+          '🔍 [SyncClient] 目标信息: ${_remoteDevice!.ipAddress}:${_remoteDevice!.port}');
+      _isConnected = false;
+      _shouldReconnect = false; // 参数错误不应重连
+      return false;
+    } on FormatException catch (e) {
+      print('❌ [SyncClient] URL格式错误: $e');
+      print(
+          '🔍 [SyncClient] 目标信息: ${_remoteDevice!.ipAddress}:${_remoteDevice!.port}');
+      _isConnected = false;
+      _shouldReconnect = false; // 格式错误不应重连
+      return false;
     } catch (e, stack) {
       print('❌ [SyncClient] 连接失败: $e');
       print('❌ [SyncClient] 错误类型: ${e.runtimeType}');
@@ -92,7 +125,7 @@ class SyncClientService {
           '🔍 [SyncClient] 目标信息: ${_remoteDevice!.ipAddress}:${_remoteDevice!.port}');
       _isConnected = false;
 
-      // 尝试重连
+      // 只有网络错误才尝试重连
       if (_shouldReconnect) {
         _scheduleReconnect();
       }
@@ -138,6 +171,8 @@ class SyncClientService {
           final message = SyncMessage.fromJson(json);
 
           print('📨 [SyncClient] 收到消息: ${message.type}');
+          print('   发送者: ${message.senderId}');
+          print('   是否有数据: ${message.data != null}');
 
           // 处理心跳
           if (message.type == SyncMessageType.ping) {
@@ -150,7 +185,9 @@ class SyncClientService {
           }
           // 其他消息转发给外部处理
           else {
+            print('📤 [SyncClient] 转发消息到 onMessageReceived 回调');
             onMessageReceived?.call(message);
+            print('✅ [SyncClient] 消息已转发');
           }
         } catch (e) {
           print('❌ [SyncClient] 处理消息失败: $e');
@@ -256,25 +293,52 @@ class SyncClientService {
   }
 
   /// 发送计时开始
-  void sendTimerStart(String todoId, DateTime startTime) {
+  void sendTimerStart({
+    required String activityId,
+    required String activityName,
+    required DateTime startTime,
+    String? linkedTodoId,
+    String? linkedTodoTitle,
+  }) {
     if (_currentDevice == null) return;
-    sendMessage(
-        SyncMessage.timerStart(_currentDevice!.deviceId, todoId, startTime));
+    sendMessage(SyncMessage.timerStart(
+      deviceId: _currentDevice!.deviceId,
+      activityId: activityId,
+      activityName: activityName,
+      startTime: startTime,
+      linkedTodoId: linkedTodoId,
+      linkedTodoTitle: linkedTodoTitle,
+    ));
   }
 
   /// 发送计时停止
-  void sendTimerStop(
-      String todoId, DateTime startTime, DateTime endTime, int duration) {
+  void sendTimerStop({
+    required String activityId,
+    required DateTime startTime,
+    required DateTime endTime,
+    required int duration,
+  }) {
     if (_currentDevice == null) return;
     sendMessage(SyncMessage.timerStop(
-        _currentDevice!.deviceId, todoId, startTime, endTime, duration));
+      deviceId: _currentDevice!.deviceId,
+      activityId: activityId,
+      startTime: startTime,
+      endTime: endTime,
+      duration: duration,
+    ));
   }
 
   /// 发送计时更新
-  void sendTimerUpdate(String todoId, int currentDuration) {
+  void sendTimerUpdate({
+    required String activityId,
+    required int currentDuration,
+  }) {
     if (_currentDevice == null) return;
     sendMessage(SyncMessage.timerUpdate(
-        _currentDevice!.deviceId, todoId, currentDuration));
+      deviceId: _currentDevice!.deviceId,
+      activityId: activityId,
+      currentDuration: currentDuration,
+    ));
   }
 
   /// 释放资源

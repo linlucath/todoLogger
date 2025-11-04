@@ -219,10 +219,25 @@ class SyncServerService {
 
   /// 广播消息给所有连接的设备
   void broadcastMessage(SyncMessage message) {
-    for (final deviceId in _connections.keys) {
-      _sendMessage(deviceId, message);
+    print('📡 [SyncServer] 开始广播消息');
+    print('   消息类型: ${message.type}');
+    print('   发送者ID: ${message.senderId}');
+    print('   当前设备ID: ${_currentDevice?.deviceId}');
+    print('   已连接设备数: ${_connections.length}');
+
+    if (_connections.isEmpty) {
+      print('⚠️  [SyncServer] 没有连接的设备，无法广播');
+      return;
     }
-    print('📢 [SyncServer] 广播消息: ${message.type}');
+
+    int successCount = 0;
+    for (final deviceId in _connections.keys) {
+      print('   → 发送到设备: $deviceId');
+      print('      是发送者本身? ${deviceId == message.senderId}');
+      _sendMessage(deviceId, message);
+      successCount++;
+    }
+    print('📢 [SyncServer] 广播消息完成: ${message.type} (成功发送到 $successCount 个设备)');
   }
 
   /// 发送消息给指定设备 (公开接口)

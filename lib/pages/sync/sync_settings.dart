@@ -342,30 +342,30 @@ class _SyncSettingsPageState extends State<SyncSettingsPage> {
           // builder: 根据 Stream 数据构建 UI
           builder: (context, snapshot) {
             // 🆕 添加调试日志
-            print('🖥️  [UI] StreamBuilder 收到更新');
-            print('   hasData: ${snapshot.hasData}');
-            print('   hasError: ${snapshot.hasError}');
-            print('   connectionState: ${snapshot.connectionState}');
+            // // print('🖥️  [UI] StreamBuilder 收到更新');
+            // print('   hasData: ${snapshot.hasData}');
+            // print('   hasError: ${snapshot.hasError}');
+            // print('   connectionState: ${snapshot.connectionState}');
 
             // 从 snapshot 获取所有计时器数据
             final allTimers = snapshot.data ?? [];
-            print('   所有计时器数量: ${allTimers.length}');
+            // print('   所有计时器数量: ${allTimers.length}');
 
             // 🔍 获取当前设备ID
             final currentDeviceId = widget.syncService.currentDevice?.deviceId;
-            print('   当前设备ID: $currentDeviceId');
+            // print('   当前设备ID: $currentDeviceId');
 
             // === 关键过滤逻辑：只显示其他设备的计时器 ===
             // 问题：allTimers 包含所有设备的计时器（包括本地）
             // 过滤远程计时器
             final remoteTimers = allTimers.where((timer) {
               final isRemote = timer.deviceId != currentDeviceId;
-              print(
-                  '   计时器 "${timer.activityName}" (ID: ${timer.deviceId}): ${isRemote ? "远程" : "本地"}');
+              // print(
+              // '   计时器 "${timer.activityName}" (ID: ${timer.deviceId}): ${isRemote ? "远程" : "本地"}');
               return isRemote;
             }).toList();
 
-            print('   过滤后的远程计时器数量: ${remoteTimers.length}');
+            // print('   过滤后的远程计时器数量: ${remoteTimers.length}');
 
             // 如果没有远程计时器，显示空状态
             if (remoteTimers.isEmpty) {
@@ -384,7 +384,7 @@ class _SyncSettingsPageState extends State<SyncSettingsPage> {
             }
 
             // 显示所有远程计时器
-            print('   显示 ${remoteTimers.length} 个远程计时器');
+            // print('   显示 ${remoteTimers.length} 个远程计时器');
             return Column(
               children:
                   remoteTimers.map((timer) => _buildTimerCard(timer)).toList(),

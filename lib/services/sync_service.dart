@@ -590,26 +590,86 @@ class SyncService {
   ///
   /// 当收到其他设备发送的计时开始消息时：
   /// 处理计时开始消息
+  /// 📥 处理接收到的计时器启动消息
+  ///
+  /// 【调用时机】当从其他设备接收到 timerStart 类型的消息时
+  ///
+  /// 【功能说明】
+  /// 这是计时器同步的接收端处理逻辑。当其他设备启动计时器并广播消息后，
+  /// 本设备的 TCP Socket 监听器会接收到消息，并调用此函数进行处理。
+  ///
+  /// 【处理流程详解】
+  ///
+  /// 📋 第一步：消息验证（防御性编程）
+  /// ├─ 检查 message.data 是否为空（消息格式错误）
+  /// ├─ 检查 message.senderId 是否为空（无法识别发送者）
+  /// ├─ 检查是否是自己发送的消息（避免重复处理）
+  /// └─ 检查必要字段：activityId、activityName、startTime
+  ///
+  /// 🔍 第二步：检查是否存在旧的计时器
+  /// ├─ 从 _activeTimers 中查找该设备是否已有计时器
+  /// ├─ 如果存在且 activityId 相同
+  /// │  └─ 可能是重新连接后的状态同步，更新现有计时器
+  /// │     └─ 选择更早的开始时间（保证时长准确）
+  /// └─ 如果存在但 activityId 不同
+  ///    └─ 说明该设备启动了新活动，覆盖旧计时器
+  ///
+  /// 🏷️ 第三步：获取设备信息
+  /// ├─ 尝试从服务器连接列表中查找设备（_serverService.getConnectedDevice）
+  /// ├─ 尝试从已连接设备列表中查找（_connectedDevicesMap）
+  /// ├─ 尝试从客户端连接列表中查找（_clientServices）
+  /// └─ 如果都找不到，使用 senderId 前8位作为默认名称
+  ///
+  /// 🎯 第四步：创建计时器状态对象
+  /// ├─ 创建 TimerState 实例，包含：
+  /// │  ├─ activityId（活动唯一标识）
+  /// │  ├─ activityName（活动名称）
+  /// │  ├─ startTime（开始时间）
+  /// │  ├─ linkedTodoId/linkedTodoTitle（关联的待办事项，可选）
+  /// │  ├─ deviceId/deviceName（来源设备信息）
+  /// │  └─ currentDuration（初始为0，后续通过 update 消息更新）
+  /// └─ 将 TimerState 添加到 _activeTimers Map 中
+  ///
+  /// 🔔 第五步：通知UI更新
+  /// └─ 调用 _notifyActiveTimersChanged()，触发 Stream 事件
+  ///    └─ UI 监听此 Stream，自动刷新"其他设备活动"列表
+  ///
+  /// 【容错机制】
+  /// 1. 取消延迟移除定时器：如果设备刚断开连接，但又重新发送消息，
+  ///    说明设备恢复在线，取消之前设置的5秒延迟移除
+  ///
+  /// 2. activityId 验证：通过对比 activityId，确保不会误更新其他活动
+  ///
+  /// 3. 时间取早：当同一活动有多个开始时间时，选择更早的时间，
+  ///    防止因网络延迟导致的时长不准确
+  ///
+  /// 【调试技巧】
+  /// 所有关键步骤都有 print 输出，通过日志可以追踪：
+  /// - 消息是否成功接收
+  /// - 数据是否完整
+  /// - 是新计时器还是更新现有计时器
+  /// - 设备信息是否正确识别
   Future<void> _handleTimerStart(SyncMessage message) async {
-    // 验证消息
+    // 📋 步骤1：基础验证
     if (message.data == null || message.senderId == null) {
       print('⚠️  [SyncService] 计时开始消息无效');
       return;
     }
 
-    // 防止处理自己发送的消息
+    // 防止处理自己发送的消息（避免循环）
     if (message.senderId == _currentDevice?.deviceId) {
       print('⏭️  [SyncService] 忽略来自自己的计时开始消息');
       return;
     }
 
-    // 提取数据
+    // 📋 步骤2：提取并验证消息数据
     final activityId = message.data!['activityId'] as String?;
     final activityName = message.data!['activityName'] as String?;
     final startTimeStr = message.data!['startTime'] as String?;
     final linkedTodoId = message.data!['linkedTodoId'] as String?;
     final linkedTodoTitle = message.data!['linkedTodoTitle'] as String?;
 
+    // 验证必要字段是否完整
     if (activityId == null || activityName == null || startTimeStr == null) {
       print('⚠️  [SyncService] 计时开始消息缺少必要字段');
       print('   activityId: $activityId');
@@ -618,21 +678,25 @@ class SyncService {
       return;
     }
 
+    // 打印接收到的消息信息（调试用）
     print('📥 [SyncService] 收到计时开始消息');
     print('   发送者设备: ${message.senderId}');
     print('   activityId: $activityId');
     print('   activityName: $activityName');
     print('   startTime: $startTimeStr');
 
+    // 解析时间字符串为 DateTime 对象
     final startTime = DateTime.parse(startTimeStr);
 
-    // 🆕 检查该设备是否已有活动计时器
+    // 🔍 步骤3：检查该设备是否已有活动计时器
     final existingTimer = _activeTimers[message.senderId];
     if (existingTimer != null) {
-      // 检查是否是同一个活动（可能是重新连接后的同步）
+      // 情况1：同一个活动的重复消息（可能是重连后的状态同步）
       if (existingTimer.activityId == activityId) {
         print('ℹ️  [SyncService] 该设备已有相同活动的计时器，更新状态');
-        // 更新现有计时器（保留较早的开始时间）
+
+        // 关键逻辑：选择更早的开始时间
+        // 为什么？因为网络延迟可能导致消息晚到达，但实际计时已经开始
         if (startTime.isBefore(existingTimer.startTime)) {
           print('   使用更早的开始时间: $startTime (旧: ${existingTimer.startTime})');
           _activeTimers[message.senderId!] = existingTimer.copyWith(
@@ -645,19 +709,24 @@ class SyncService {
         _notifyActiveTimersChanged();
         return;
       } else {
+        // 情况2：不同的活动（用户在该设备上启动了新的计时器）
         print('⚠️  [SyncService] 该设备有不同的活动在运行');
         print('   现有activityId: ${existingTimer.activityId}');
         print('   新的activityId: $activityId');
         print('   将覆盖为新活动（旧活动可能已在其设备上结束）');
+        // 继续执行下面的逻辑，创建新的计时器状态
       }
     }
 
-    // 获取发送者设备信息
+    // 🏷️ 步骤4：获取发送者设备信息
+    // 尝试从多个来源查找设备信息（因为设备可能通过不同方式连接）
     DeviceInfo? senderDevice =
         _serverService.getConnectedDevice(message.senderId!);
 
+    // 如果服务器连接列表中没找到，从已连接设备Map中查找
     senderDevice ??= _connectedDevicesMap[message.senderId!];
 
+    // 如果还是没找到，从客户端连接中查找
     if (senderDevice == null) {
       final client = _clientServices[message.senderId!];
       if (client != null) {
@@ -665,129 +734,245 @@ class SyncService {
       }
     }
 
+    // 获取设备名称，如果找不到设备信息，使用 deviceId 的前8位作为显示名称
     final deviceName = senderDevice?.deviceName ??
         'Device-${message.senderId!.substring(0, 8)}';
 
-    // 创建计时器状态
+    // 🎯 步骤5：创建计时器状态对象
     final timerState = TimerState(
       activityId: activityId,
       activityName: activityName,
       linkedTodoId: linkedTodoId,
       linkedTodoTitle: linkedTodoTitle,
       startTime: startTime,
-      currentDuration: 0,
+      currentDuration: 0, // 初始时长为0，后续通过 update 消息更新
       deviceId: message.senderId!,
       deviceName: deviceName,
     );
 
-    // 🔒 安全地添加计时器
+    // 🔒 步骤6：安全地添加计时器
     // 取消该设备的延迟移除定时器（如果存在）
+    // 场景：设备A断开连接，5秒后会自动移除其计时器
+    //       但如果在5秒内设备A重新连接并发送计时器消息，
+    //       我们应该取消移除操作，保留计时器
     _deviceDisconnectTimers[message.senderId!]?.cancel();
     _deviceDisconnectTimers.remove(message.senderId!);
 
-    // 添加到活动计时器列表
+    // 将计时器状态添加到活动计时器列表
+    // 使用 senderId 作为 key，确保每个设备只有一个活动计时器
     _activeTimers[message.senderId!] = timerState;
 
+    // 🔔 步骤7：通知UI更新
     _notifyActiveTimersChanged();
 
+    // 打印成功信息
     print('⏱️  [SyncService] 计时开始: ${timerState.activityName} on $deviceName');
     print('   activityId: $activityId');
     print('   开始时间: $startTime');
     print('   活动计时器总数: ${_activeTimers.length}');
   }
 
-  /// 处理计时停止
+  /// 📥 处理接收到的计时器停止消息
+  ///
+  /// 【调用时机】当从其他设备接收到 timerStop 类型的消息时
+  ///
+  /// 【功能说明】
+  /// 当其他设备的计时器停止后，本设备需要从"其他设备活动"列表中移除对应的计时器
+  ///
+  /// 【处理流程详解】
+  ///
+  /// 📋 第一步：消息验证
+  /// ├─ 检查 senderId 和 data 是否存在
+  /// └─ 检查 activityId 是否存在（必要字段）
+  ///
+  /// 🔍 第二步：查找并验证计时器
+  /// ├─ 从 _activeTimers 中查找该设备的计时器
+  /// ├─ 如果找到，验证 activityId 是否匹配
+  /// │  ├─ 匹配：正常停止，继续执行
+  /// │  └─ 不匹配：可能发生了状态不一致，请求重新同步
+  /// └─ 如果没找到，说明计时器可能已经被移除或从未启动
+  ///
+  /// 🗑️ 第三步：移除计时器
+  /// ├─ 从 _activeTimers Map 中移除该设备的计时器
+  /// └─ 调用 _notifyActiveTimersChanged() 通知UI更新
+  ///
+  /// 【为什么需要 activityId 验证？】
+  /// 场景：设备A有两个快速的计时操作
+  /// 1. 启动"学习"计时器（activityId: aaa）
+  /// 2. 立即停止并启动"工作"计时器（activityId: bbb）
+  /// 3. 由于网络延迟，"学习"的 stop 消息可能在"工作"的 start 消息之后到达
+  /// 4. 如果不验证 activityId，可能会误删"工作"计时器
+  ///
+  /// 【状态不一致处理】
+  /// 如果 activityId 不匹配，调用 _syncCurrentTimerState() 请求该设备的完整状态，
+  /// 确保本地状态与远程设备保持一致
   Future<void> _handleTimerStop(SyncMessage message) async {
+    // 📋 步骤1：验证消息基本字段
     if (message.senderId == null || message.data == null) {
       print('⚠️  [SyncService] 计时停止消息无效: 缺少senderId或data');
       return;
     }
 
+    // 提取消息数据
     final activityId = message.data!['activityId'] as String?;
     final duration = message.data!['duration'] as int?;
 
+    // 验证 activityId（关键字段）
     if (activityId == null) {
       print('⚠️  [SyncService] 计时停止消息无效: 缺少activityId');
       return;
     }
 
+    // 打印接收到的消息信息
     print('📥 [SyncService] 收到计时停止消息');
     print('   发送者: ${message.senderId}');
     print('   activityId: $activityId');
     print('   持续时间: $duration秒');
 
-    // 🔒 查找并验证计时器
+    // � 步骤2：查找并验证计时器
     final existingTimer = _activeTimers[message.senderId!];
     if (existingTimer != null) {
-      // 验证activityId是否匹配
+      // 🔒 关键验证：activityId 是否匹配
       if (existingTimer.activityId != activityId) {
+        // 情况：本地记录的计时器与要停止的计时器不一致
         print('⚠️  [SyncService] 计时器ID不匹配!');
         print('   期望的activityId: ${existingTimer.activityId}');
         print('   收到的activityId: $activityId');
         print('   请求完整状态重新同步...');
 
-        // ID不匹配时，请求该设备的完整计时器状态
+        // 调用状态同步，获取该设备的最新计时器状态
+        // 这样可以修复任何因网络延迟或消息丢失导致的不一致
         await _syncCurrentTimerState(message.senderId!);
         return;
       } else {
+        // activityId 匹配，验证通过
         print('✅ [SyncService] activityId 匹配验证通过');
       }
 
+      // 打印停止信息
       print('⏹️  [SyncService] 计时停止: ${existingTimer.activityName}');
       if (duration != null) {
         print('   持续时间: $duration秒 (${(duration / 60).toStringAsFixed(1)}分钟)');
       }
     } else {
+      // 情况：没有找到对应的计时器
+      // 可能原因：
+      // 1. 计时器已经被其他消息停止
+      // 2. 从未收到该计时器的 start 消息（消息丢失）
+      // 3. 设备断连后清理了计时器
       print('⚠️  [SyncService] 计时停止: 未找到设备 ${message.senderId} 的活动计时器');
       print('   这可能意味着计时器已经被停止或从未启动');
     }
 
-    // 移除计时器
+    // 🗑️ 步骤3：移除计时器
+    // 无论是否找到计时器，都尝试移除（幂等操作）
     _activeTimers.remove(message.senderId);
 
+    // 🔔 步骤4：通知UI更新
     _notifyActiveTimersChanged();
   }
 
-  /// 处理计时更新
+  /// 📥 处理接收到的计时器更新消息
+  ///
+  /// 【调用时机】当从其他设备接收到 timerUpdate 类型的消息时（每秒一次）
+  ///
+  /// 【功能说明】
+  /// 更新本地保存的远程设备计时器状态，确保UI显示的时长与发送方保持一致
+  ///
+  /// 【处理流程详解】
+  ///
+  /// 📋 第一步：消息验证
+  /// ├─ 检查 data 和 senderId 是否存在
+  /// └─ 检查 activityId 和 currentDuration 是否存在
+  ///
+  /// 🔍 第二步：查找并验证计时器
+  /// ├─ 从 _activeTimers 中查找该设备的计时器
+  /// ├─ 如果找到，验证 activityId 是否匹配
+  /// │  ├─ 匹配：更新 currentDuration
+  /// │  └─ 不匹配：可能状态不一致，请求重新同步
+  /// └─ 如果没找到，说明可能错过了 start 消息
+  ///    └─ 主动请求该设备的完整计时器状态（_syncCurrentTimerState）
+  ///
+  /// 🔄 第三步：更新计时器状态
+  /// ├─ 使用 copyWith 创建新的 TimerState 对象
+  /// ├─ 只更新 currentDuration 字段
+  /// └─ 保持其他字段不变（activityName、startTime 等）
+  ///
+  /// 🔔 第四步：通知UI更新
+  /// └─ 调用 _notifyActiveTimersChanged()
+  ///    └─ UI 监听到变化，刷新计时器显示
+  ///
+  /// 【容错机制：主动状态同步】
+  /// 如果收到 update 消息时发现本地没有对应的计时器，
+  /// 说明可能错过了 start 消息（网络丢包或延迟）。
+  /// 此时会调用 _syncCurrentTimerState() 主动向发送方请求完整状态，
+  /// 确保不会遗漏任何正在运行的计时器。
+  ///
+  /// 【activityId 验证的重要性】
+  /// 场景：设备A快速启动多个计时器
+  /// 1. 启动"学习"（activityId: aaa）
+  /// 2. 启动"工作"（activityId: bbb）
+  /// 3. 如果收到 activityId=aaa 的 update 消息，但本地记录的是 bbb
+  /// 4. 说明本地状态已过时，需要重新同步
   Future<void> _handleTimerUpdate(SyncMessage message) async {
+    // 📋 步骤1：验证消息基本字段
     if (message.data == null || message.senderId == null) return;
 
+    // 提取消息数据
     final activityId = message.data!['activityId'] as String?;
     final currentDuration = message.data!['currentDuration'] as int?;
 
+    // 验证必要字段
     if (activityId == null || currentDuration == null) {
       print('⚠️  [SyncService] 计时更新消息无效: 缺少activityId或currentDuration');
       return;
     }
 
+    // 打印接收到的更新信息（调试用）
     print('📥 [SyncService] 收到计时更新: from ${message.senderId}');
     print('   activityId: $activityId');
     print('   currentDuration: $currentDuration 秒');
 
-    // 🔒 查找并验证计时器
+    // � 步骤2：查找并验证计时器
     final existingTimer = _activeTimers[message.senderId];
     if (existingTimer != null) {
-      // 验证activityId是否匹配
+      // 🔒 关键验证：activityId 是否匹配
       if (existingTimer.activityId != activityId) {
+        // 情况：本地记录的计时器与更新消息中的不一致
         print(
             '⚠️  [SyncService] 计时更新ID不匹配: 期望${existingTimer.activityId}, 收到$activityId');
-        // ID不匹配时，请求该设备的完整计时器状态
+
+        // 调用状态同步，获取该设备的最新完整状态
+        // 这样可以修复因消息丢失或延迟导致的不一致
         await _syncCurrentTimerState(message.senderId!);
         return;
       }
 
+      // 🔄 步骤3：更新计时器状态
+      // 使用 copyWith 方法创建新对象，只修改 currentDuration
       _activeTimers[message.senderId!] =
           existingTimer.copyWith(currentDuration: currentDuration);
+
       print(
           '✅ [SyncService] 更新计时器时长: ${existingTimer.activityName} -> $currentDuration 秒');
     } else {
       // 🆕 关键修复：如果计时器不存在，主动请求完整状态而不是静默失败
+      //
+      // 为什么会出现这种情况？
+      // 1. 网络丢包：start 消息丢失，但 update 消息到达
+      // 2. 连接延迟：设备刚连接，还没收到 start 消息就先收到 update
+      // 3. 消息乱序：由于网络原因，消息到达顺序与发送顺序不一致
+      //
+      // 解决方案：
+      // 主动请求该设备的完整计时器状态，补齐缺失的信息
       print('⚠️  [SyncService] 未找到计时器 (设备: ${message.senderId})');
       print('   尝试重新同步计时器状态...');
       await _syncCurrentTimerState(message.senderId!);
       return;
     }
 
+    // 🔔 步骤4：通知UI更新
+    // 触发 Stream 事件，所有监听者（UI组件）会收到通知并刷新显示
     _notifyActiveTimersChanged();
   }
 
@@ -1100,22 +1285,22 @@ class SyncService {
     // activeTimers getter 返回 _activeTimers.values.toList()
     final timers = activeTimers;
 
-    print('📢 [SyncService] 通知活动计时器变化, 当前 ${timers.length} 个活动计时器');
-    print('   当前设备ID: ${_currentDevice?.deviceId}');
+    // print('📢 [SyncService] 通知活动计时器变化, 当前 ${timers.length} 个活动计时器');
+    // print('   当前设备ID: ${_currentDevice?.deviceId}');
 
     // 打印每个计时器的详细信息（用于调试）
-    for (final timer in timers) {
-      print(
-          '   - ${timer.activityName} (设备: ${timer.deviceName}, ID: ${timer.deviceId}): ${timer.currentDuration}s');
-    }
+    // for (final timer in timers) {
+    //   print(
+    //       '   - ${timer.activityName} (设备: ${timer.deviceName}, ID: ${timer.deviceId}): ${timer.currentDuration}s');
+    // }
 
     // 🎯 关键：通过 StreamController 发送新事件
     // 这会触发所有监听 activeTimersStream 的 StreamBuilder 重建
     if (!_activeTimersController.isClosed) {
       _activeTimersController.add(timers);
-      print('✅ [SyncService] 活动计时器已通过Stream发送到UI');
-      print('   发送的计时器数量: ${timers.length}');
-      print('   Stream 有监听者吗: ${_activeTimersController.hasListener}');
+      // print('✅ [SyncService] 活动计时器已通过Stream发送到UI');
+      // print('   发送的计时器数量: ${timers.length}');
+      // print('   Stream 有监听者吗: ${_activeTimersController.hasListener}');
     } else {
       print('⚠️  [SyncService] 活动计时器控制器已关闭');
     }
@@ -1582,30 +1767,69 @@ class SyncService {
     _handleServerMessage(message, message.senderId ?? '');
   }
 
-  // ==================== 计时器同步 Step 2: 广播计时开始消息 ====================
+  // ==================== 📤 计时器同步功能：发送端 ====================
 
-  /// 广播计时开始
+  /// 📤 广播计时器启动消息
   ///
-  /// 这是计时器同步的核心函数，负责将本地计时器启动事件通知所有已连接设备
+  /// 【调用时机】当用户在本设备启动一个新的计时器时
   ///
-  /// 工作原理：
-  /// 1. 创建包含计时信息的 SyncMessage
-  /// 2. 通过两种渠道发送消息：
-  ///    a) 服务器广播：发送给所有连接到本设备的客户端（本设备作为服务器）
-  ///    b) 客户端发送：发送给本设备连接到的所有服务器（本设备作为客户端）
-  /// 3. 这样确保了双向通信，无论哪个设备是服务器/客户端都能收到消息
+  /// 【功能说明】
+  /// 这是计时器多设备同步的起点。当用户点击"开始计时"按钮后，
+  /// 本地会创建一个计时器，同时调用此函数将计时器信息广播给所有已连接的设备。
+  ///
+  /// 【双通道广播机制】
+  /// 为了确保消息能到达所有设备，使用两种发送渠道：
+  ///
+  /// 1️⃣ 服务器模式广播（broadcastMessage）
+  ///    - 如果本设备正在运行服务器（_isServerRunning = true）
+  ///    - 通过 SyncServerService 将消息发送给所有已连接的客户端
+  ///    - 适用场景：其他设备主动连接到本设备
+  ///
+  /// 2️⃣ 客户端模式发送（sendMessage）
+  ///    - 遍历所有客户端连接（_clientServices）
+  ///    - 通过每个 SyncClientService 将消息发送到对应的服务器
+  ///    - 适用场景：本设备主动连接到其他设备
+  ///
+  /// 【为什么需要双通道？】
+  /// 在实际使用中，设备之间的连接关系是复杂的：
+  /// - 设备A可能作为服务器，设备B作为客户端连接A
+  /// - 同时设备A也可能作为客户端，连接到设备C的服务器
+  /// - 双通道确保无论连接方向如何，消息都能正确传递
+  ///
+  /// 【参数说明】
+  /// @param activityId 活动唯一标识（UUID），用于跨设备追踪同一个计时器
+  /// @param activityName 活动名称（如"学习"、"工作"），显示在UI上
+  /// @param startTime 计时开始的精确时间戳（所有设备以此为基准计算时长）
+  /// @param todoId 可选：关联的待办事项ID（用于计时完成后自动标记Todo）
+  /// @param todoTitle 可选：关联的待办事项标题（用于显示）
+  ///
+  /// 【消息流程】
+  /// 1. 检查当前设备是否已初始化（_currentDevice != null）
+  /// 2. 创建 SyncMessage.timerStart 消息对象
+  /// 3. 通过服务器广播给所有客户端
+  /// 4. 通过所有客户端连接发送给各个服务器
+  /// 5. 统计并打印发送成功的连接数
+  ///
+  /// 【接收端处理】
+  /// 其他设备收到此消息后，会调用 _handleTimerStart 方法，
+  /// 在本地创建一个 TimerState 对象并显示在UI的"其他设备活动"列表中
   void broadcastTimerStart(String activityId, String activityName,
       DateTime startTime, String? todoId, String? todoTitle) {
+    // 步骤1: 验证当前设备是否已初始化
     if (_currentDevice == null) {
       print('⚠️  [SyncService] 无法广播计时开始：当前设备未初始化');
       return;
     }
 
+    // 步骤2: 打印调试信息（帮助追踪同步流程）
     print('📤 [SyncService] 广播计时开始');
     print('   activityId: $activityId');
     print('   activityName: $activityName');
     print('   开始时间: $startTime');
 
+    // 步骤3: 创建计时开始消息
+    // 这里调用了 SyncMessage.timerStart 工厂方法
+    // 该方法会将所有参数封装成标准的JSON格式
     final message = SyncMessage.timerStart(
       deviceId: _currentDevice!.deviceId,
       activityId: activityId,
@@ -1615,16 +1839,18 @@ class SyncService {
       linkedTodoTitle: todoTitle,
     );
 
-    int sentCount = 0;
+    int sentCount = 0; // 统计成功发送的连接数
 
-    // 通过服务器广播
+    // 步骤4: 通道1 - 服务器模式广播
+    // 如果本设备正在运行服务器，广播给所有连接的客户端
     if (_isServerRunning) {
       _serverService.broadcastMessage(message);
       sentCount++;
       print('   ✓ 通过服务器广播');
     }
 
-    // 通过客户端发送
+    // 步骤5: 通道2 - 客户端模式发送
+    // 遍历所有客户端连接，逐个发送消息
     for (final client in _clientServices.values) {
       if (client.isConnected) {
         client.sendMessage(message);
@@ -1632,10 +1858,32 @@ class SyncService {
       }
     }
 
+    // 步骤6: 打印发送结果
     print('   已发送到 $sentCount 个连接');
   }
 
-  /// 广播计时停止
+  /// 📤 广播计时器停止消息
+  ///
+  /// 【调用时机】当用户在本设备停止计时器时
+  ///
+  /// 【功能说明】
+  /// 通知所有已连接的设备：某个计时器已经停止，应该从"其他设备活动"列表中移除
+  ///
+  /// 【参数说明】
+  /// @param activityId 要停止的活动ID（必须与启动时的ID完全一致）
+  /// @param startTime 计时开始时间（用于记录和验证）
+  /// @param endTime 计时结束时间
+  /// @param duration 总持续时间（秒），用于显示和记录
+  ///
+  /// 【重要性】
+  /// - activityId 验证：接收端会验证 activityId 是否匹配，
+  ///   防止误删其他正在运行的计时器
+  /// - duration 记录：将最终时长保存到数据库，用于统计分析
+  ///
+  /// 【消息流程】
+  /// 1. 创建 SyncMessage.timerStop 消息
+  /// 2. 通过服务器广播 + 客户端发送（双通道）
+  /// 3. 其他设备收到后调用 _handleTimerStop 移除计时器
   void broadcastTimerStop(
       String activityId, DateTime startTime, DateTime endTime, int duration) {
     if (_currentDevice == null) {
@@ -1647,6 +1895,7 @@ class SyncService {
     print('   activityId: $activityId');
     print('   持续时间: $duration秒');
 
+    // 创建计时停止消息
     final message = SyncMessage.timerStop(
       deviceId: _currentDevice!.deviceId,
       activityId: activityId,
@@ -1674,10 +1923,32 @@ class SyncService {
     print('   已发送到 $sentCount 个连接');
   }
 
-  /// 广播计时更新
+  /// 📤 广播计时器更新消息
+  ///
+  /// 【调用时机】每秒定时调用（通过 _activeTimersUpdateTimer）
+  ///
+  /// 【功能说明】
+  /// 定期向所有连接的设备发送当前计时器的最新时长，
+  /// 保持所有设备显示的计时器时长同步
+  ///
+  /// 【为什么需要定期更新？】
+  /// 1. 📊 时长同步：确保所有设备显示相同的计时时长
+  /// 2. 💓 心跳检测：定期发送消息可以检测网络连接是否正常
+  /// 3. 🔄 新设备同步：如果有新设备连接进来，可以快速获取当前状态
+  /// 4. 🛡️ 容错恢复：如果某个设备错过了 start 消息，update 消息可以帮助其重新同步
+  ///
+  /// 【参数说明】
+  /// @param activityId 活动ID（用于识别是哪个计时器）
+  /// @param currentDuration 当前累计时长（秒）
+  ///
+  /// 【优化考虑】
+  /// - 更新频率：1秒/次（在 _activeTimersUpdateInterval 中定义）
+  /// - 消息大小：很小（只包含ID和时长），对网络负担小
+  /// - 只在有活动计时器时发送，避免不必要的网络流量
   void broadcastTimerUpdate(String activityId, int currentDuration) {
     if (_currentDevice == null) return;
 
+    // 创建计时更新消息
     final message = SyncMessage.timerUpdate(
       deviceId: _currentDevice!.deviceId,
       activityId: activityId,
@@ -2119,8 +2390,47 @@ class SyncService {
             single.activity.linkedTodoTitle,
           );
         } else {
-          // 远程活动已存在于 _activeTimers 中，无需额外处理
-          print('📥 [SyncService] 远程活动已存在: ${single.activity.name}');
+          // 🔑 关键修复：远程活动需要保存为本地当前活动
+          print('📥 [SyncService] 发现远程活动: ${single.activity.name}');
+          print('💾 [SyncService] 将远程活动设置为本地当前活动...');
+
+          // 🔑 第一步：确保远程活动在 _activeTimers 中
+          if (!_activeTimers.containsKey(single.deviceId)) {
+            final timerState = TimerState(
+              activityId: single.activity.activityId,
+              activityName: single.activity.name,
+              linkedTodoId: single.activity.linkedTodoId,
+              linkedTodoTitle: single.activity.linkedTodoTitle,
+              startTime: single.activity.startTime,
+              currentDuration: DateTime.now()
+                  .difference(single.activity.startTime)
+                  .inSeconds,
+              deviceId: single.deviceId,
+              deviceName: single.deviceName,
+            );
+            _activeTimers[single.deviceId] = timerState;
+            print('✅ [SyncService] 远程活动已添加到 _activeTimers');
+          }
+
+          // 🔑 第二步：将远程活动保存为本地当前活动
+          await TimeLoggerStorage.saveCurrentActivity(ActivityRecordData(
+            activityId: single.activity.activityId,
+            name: single.activity.name,
+            startTime: single.activity.startTime,
+            endTime: null,
+            linkedTodoId: single.activity.linkedTodoId,
+            linkedTodoTitle: single.activity.linkedTodoTitle,
+          ));
+          print('💾 [SyncService] 远程活动已保存为本地当前活动');
+
+          // 🔑 第三步：通知活动计时器变化
+          _notifyActiveTimersChanged();
+          print('📢 [SyncService] 已调用 _notifyActiveTimersChanged() 更新UI计时器显示');
+
+          // 🔑 第四步：延迟后通知页面刷新
+          await Future.delayed(const Duration(milliseconds: 100));
+          _notifyDataUpdated('timeLogs', single.deviceId, 1);
+          print('📢 [SyncService] 已通知UI刷新以显示远程活动');
         }
         return;
       }
@@ -2172,18 +2482,7 @@ class SyncService {
         // 🆕 远程活动获胜，需要在本地设置并通知UI
         print('📥 [SyncService] 远程活动获胜，设置为本地当前活动');
 
-        // 将远程活动保存为本地当前活动
-        await TimeLoggerStorage.saveCurrentActivity(ActivityRecordData(
-          activityId: newestActivity.activity.activityId,
-          name: newestActivity.activity.name,
-          startTime: newestActivity.activity.startTime,
-          endTime: null,
-          linkedTodoId: newestActivity.activity.linkedTodoId,
-          linkedTodoTitle: newestActivity.activity.linkedTodoTitle,
-        ));
-        print('💾 [SyncService] 远程活动已保存为本地当前活动');
-
-        // 🔑 关键修复：确保远程活动在 _activeTimers 中（如果不存在则添加）
+        // 🔑 第一步：确保远程活动在 _activeTimers 中（如果不存在则添加）
         if (!_activeTimers.containsKey(newestActivity.deviceId)) {
           final timerState = TimerState(
             activityId: newestActivity.activity.activityId,
@@ -2201,11 +2500,25 @@ class SyncService {
           print('✅ [SyncService] 远程活动已添加到 _activeTimers');
         }
 
-        // 🔑 关键修复：通知活动计时器变化，让UI显示远程活动
+        // 🔑 第二步：将远程活动保存为本地当前活动
+        await TimeLoggerStorage.saveCurrentActivity(ActivityRecordData(
+          activityId: newestActivity.activity.activityId,
+          name: newestActivity.activity.name,
+          startTime: newestActivity.activity.startTime,
+          endTime: null,
+          linkedTodoId: newestActivity.activity.linkedTodoId,
+          linkedTodoTitle: newestActivity.activity.linkedTodoTitle,
+        ));
+        print('💾 [SyncService] 远程活动已保存为本地当前活动');
+
+        // 🔑 第三步：通知活动计时器变化，让UI显示远程活动
         _notifyActiveTimersChanged();
         print('📢 [SyncService] 已调用 _notifyActiveTimersChanged() 更新UI计时器显示');
 
-        // 通知计时器页面刷新（显示远程活动）
+        // 🔑 第四步：使用 Future.delayed 确保通知在下一帧发送，给UI足够时间处理
+        await Future.delayed(const Duration(milliseconds: 100));
+
+        // 🔑 第五步：通知计时器页面刷新（显示远程活动）
         _notifyDataUpdated('timeLogs', newestActivity.deviceId, 1);
         print('📢 [SyncService] 已通知UI刷新以显示远程活动');
       }

@@ -113,7 +113,16 @@ class _TimeLoggerPageState extends State<TimeLoggerPage> {
       final currentActivity = await TimeLoggerStorage.getCurrentActivity();
 
       print('📂 [TimeLogger] 从存储加载的活动: ${currentActivity?.name ?? "null"}');
+      if (currentActivity != null) {
+        print('   - activityId: ${currentActivity.activityId}');
+        print('   - 开始时间: ${currentActivity.startTime}');
+        print('   - linkedTodoId: ${currentActivity.linkedTodoId}');
+      }
       print('📂 [TimeLogger] 当前UI显示的活动: ${_currentActivity?.name ?? "null"}');
+      if (_currentActivity != null) {
+        print('   - activityId: ${_currentActivity!.activityId}');
+        print('   - 开始时间: ${_currentActivity!.startTime}');
+      }
 
       if (!mounted) {
         print('⚠️  [TimeLogger] 组件已卸载，跳过更新');
@@ -122,14 +131,16 @@ class _TimeLoggerPageState extends State<TimeLoggerPage> {
 
       setState(() {
         if (currentActivity != null) {
-          // 检查是否需要更新当前活动
+          // 检查是否需要更新当前活动（比较 activityId 和开始时间）
           final needsUpdate = _currentActivity == null ||
+              _currentActivity!.activityId != currentActivity.activityId ||
               _currentActivity!.startTime != currentActivity.startTime ||
               _currentActivity!.name != currentActivity.name;
 
           if (needsUpdate) {
             print('🔄 [TimeLogger] 更新当前活动: ${currentActivity.name}');
             print('   开始时间: ${currentActivity.startTime}');
+            print('   activityId: ${currentActivity.activityId}');
 
             // 停止旧的计时器
             _timer?.cancel();
@@ -152,6 +163,8 @@ class _TimeLoggerPageState extends State<TimeLoggerPage> {
             });
 
             print('✅ [TimeLogger] 活动更新完成，计时器已启动');
+            print('   当前显示: ${_currentActivity!.name}');
+            print('   _isRecording: $_isRecording');
           } else {
             print('✅ [TimeLogger] 活动相同，无需更新');
           }
@@ -169,7 +182,7 @@ class _TimeLoggerPageState extends State<TimeLoggerPage> {
         }
       });
 
-      print('✅ [TimeLogger] 重新加载完成');
+      print('✅ [TimeLogger] 重新加载完成，_isRecording: $_isRecording');
     } catch (e) {
       print('❌ [TimeLogger] 重新加载当前活动失败: $e');
     }

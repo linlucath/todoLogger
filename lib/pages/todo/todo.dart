@@ -522,71 +522,9 @@ class _TodoPageState extends State<TodoPage> {
           ));
         }
 
-        // 如果没有数据，添加示例数据
-        if (_todoLists.isEmpty) {
-          debugPrint('⚠️ No data found, adding sample data');
-          _addSampleData();
-        }
-
         _isLoading = false;
       });
     }
-  }
-
-  // 添加示例数据
-  void _addSampleData() {
-    _todoLists.addAll([
-      TodoList(
-        id: '1',
-        name: '工作',
-        color: Colors.blue,
-        items: [
-          TodoItem(
-            id: '1',
-            title: '完成项目报告',
-            description: '准备本周项目进度报告',
-            createdAt: DateTime.now(),
-            listId: '1',
-          ),
-          TodoItem(
-            id: '2',
-            title: '团队会议',
-            createdAt: DateTime.now(),
-            listId: '1',
-          ),
-        ],
-      ),
-      TodoList(
-        id: '2',
-        name: '个人',
-        color: Colors.green,
-        items: [
-          TodoItem(
-            id: '3',
-            title: '健身打卡',
-            description: '跑步30分钟',
-            createdAt: DateTime.now(),
-            listId: '2',
-          ),
-        ],
-      ),
-      TodoList(
-        id: '3',
-        name: '学习',
-        color: Colors.orange,
-        items: [
-          TodoItem(
-            id: '4',
-            title: '阅读《Flutter实战》',
-            createdAt: DateTime.now(),
-            listId: '3',
-          ),
-        ],
-      ),
-    ]);
-
-    // 保存示例数据
-    _saveData();
   }
 
   // 保存数据到存储

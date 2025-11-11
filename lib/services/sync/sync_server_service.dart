@@ -5,7 +5,7 @@ import 'package:shelf/shelf.dart';
 import 'package:shelf/shelf_io.dart' as shelf_io;
 import 'package:shelf_web_socket/shelf_web_socket.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
-import '../models/sync_models.dart';
+import '../../models/sync_models.dart';
 
 /// 同步服务器 - 接收来自其他设备的连接和数据
 class SyncServerService {

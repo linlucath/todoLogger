@@ -1,6 +1,6 @@
 import 'dart:convert';
 import 'package:shared_preferences/shared_preferences.dart';
-import '../models/target_models.dart';
+import '../../models/target_models.dart';
 
 class TargetStorage {
   static const String _targetsKey = 'targets';

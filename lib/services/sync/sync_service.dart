@@ -2,20 +2,20 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:uuid/uuid.dart';
-import '../models/sync_models.dart';
-import '../models/sync_data_models.dart';
-import '../models/sync_error.dart';
-import '../utils/sync_compression.dart';
-import '../utils/sync_lock.dart';
+import '../../models/sync_models.dart';
+import '../../models/sync_data_models.dart';
+import '../../models/sync_error.dart';
+import '../../utils/sync_compression.dart';
+import '../../utils/sync_lock.dart';
 import 'device_discovery_service.dart';
 import 'sync_server_service.dart';
 import 'sync_client_service.dart';
 import 'git_style_merger.dart'; // 🆕 Git-style 合并器
 import 'sync_history_service.dart';
-import 'todo_storage.dart';
-import 'time_logger_storage.dart';
-import 'target_storage.dart';
-import '../models/target_models.dart';
+import '../storage/todo_storage.dart';
+import '../storage/time_logger_storage.dart';
+import '../storage/target_storage.dart';
+import '../../models/target_models.dart';
 
 /// 同步服务 - 统一管理所有同步功能
 class SyncService {

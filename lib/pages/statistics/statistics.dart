@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:fl_chart/fl_chart.dart';
-import '../../services/statistics_service.dart';
+import '../../models/statistics_models.dart';
 
 class StatisticsPage extends StatefulWidget {
   const StatisticsPage({super.key});

@@ -1,7 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'package:web_socket_channel/web_socket_channel.dart';
-import '../models/sync_models.dart';
+import '../../models/sync_models.dart';
 
 /// 同步客户端 - 连接到其他设备
 class SyncClientService {

@@ -1,4 +1,4 @@
-import '../models/sync_data_models.dart';
+import '../../models/sync_data_models.dart';
 
 /// 合并类型
 enum MergeType {

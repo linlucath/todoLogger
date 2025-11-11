@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import '../models/sync_error.dart';
-import '../services/sync_service.dart';
+import '../services/sync/sync_service.dart';
 
 /// 同步错误处理器 Widget
 /// 监听同步错误并显示友好的错误提示

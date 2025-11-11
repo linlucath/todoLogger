@@ -1,7 +1,7 @@
 import 'package:intl/intl.dart';
 import '../../models/target_models.dart';
-import '../time_logger_storage.dart';
-import '../todo_storage.dart';
+import '../storage/time_logger_storage.dart';
+import '../storage/todo_storage.dart';
 
 class TargetCalculator {
   /// 计算目标的当前周期
@@ -72,7 +72,7 @@ class TargetCalculator {
       }
     }
 
-    // 如果目标没有关联任何 TODO 或列表，返回空进度
+    // 如果目标没有关联任何 ToDo 或列表，返回空进度
     if (targetTodoIds.isEmpty) {
       print('⚠️ [TargetCalculator] 目标未关联任何 TODO 或列表');
       return TargetProgress(

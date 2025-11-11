@@ -1,7 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 import 'dart:convert';
-import '../models/sync_models.dart';
+import '../../models/sync_models.dart';
 
 const int debugFlag = 0; // 调试标志，1=打印调试输出，0=不打印
 

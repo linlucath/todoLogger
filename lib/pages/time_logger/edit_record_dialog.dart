@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
-import '../../services/time_logger_storage.dart';
+import '../../services/storage/time_logger_storage.dart';
 
 /// 编辑或创建活动记录对话框
 class EditRecordDialog extends StatefulWidget {

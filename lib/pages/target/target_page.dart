@@ -1,11 +1,11 @@
 import 'package:flutter/material.dart';
 import 'dart:async';
 import '../../models/target_models.dart';
-import '../../services/target_storage.dart';
+import '../../services/storage/target_storage.dart';
 import '../../services/sync/target_calculator.dart' as target_calc;
 import 'target_edit_dialog.dart';
-import '../../services/sync_service.dart';
-import '../../services/todo_storage.dart'; // 🆕 导入 TodoStorage 用于同步元数据
+import '../../services/sync/sync_service.dart';
+import '../../services/storage/todo_storage.dart'; // 🆕 导入 TodoStorage 用于同步元数据
 
 /// Target 主页面
 class TargetPage extends StatefulWidget {

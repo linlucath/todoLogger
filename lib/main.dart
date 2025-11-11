@@ -10,7 +10,7 @@ import 'pages/target/target_page.dart';
 import 'pages/statistics/statistics.dart';
 import 'pages/sync/sync_settings.dart';
 import 'widgets/custom_title_bar.dart';
-import 'services/sync_service.dart';
+import 'services/sync/sync_service.dart';
 import 'services/notification_service.dart';
 
 // 全局同步服务实例

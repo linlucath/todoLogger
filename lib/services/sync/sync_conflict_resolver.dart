@@ -1,4 +1,4 @@
-import '../models/sync_data_models.dart';
+import '../../models/sync_data_models.dart';
 
 /// 冲突解决策略
 enum ConflictResolutionStrategy {

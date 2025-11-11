@@ -1,4 +1,4 @@
-import 'time_logger_storage.dart';
+import '../services/storage/time_logger_storage.dart';
 
 /// 统计数据模型
 class StatisticsData {

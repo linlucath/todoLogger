@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
-import '../../services/time_logger_storage.dart';
+import '../../services/storage/time_logger_storage.dart';
 import './edit_record_dialog.dart';
 
 /// 活动历史页面 - 支持分页和懒加载，以及编辑、删除、创建功能

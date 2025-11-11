@@ -1,7 +1,7 @@
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import '../models/sync_data_models.dart';
+import '../../models/sync_data_models.dart';
 
 // TodoItem 数据类（用于序列化）
 class TodoItemData {

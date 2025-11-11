@@ -2,8 +2,8 @@ import 'package:flutter/material.dart';
 import 'dart:async';
 import 'add_todo_dialog.dart';
 import 'add_list_dialog.dart';
-import '../../services/todo_storage.dart';
-import '../../services/sync_service.dart';
+import '../../services/storage/todo_storage.dart';
+import '../../services/sync/sync_service.dart';
 
 // TodoItem 数据模型（单个 Todo）
 class TodoItem {

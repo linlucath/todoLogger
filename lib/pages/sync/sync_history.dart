@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
-import '../../services/sync_history_service.dart';
+import '../../services/sync/sync_history_service.dart';
 
 /// 同步历史页面
 class SyncHistoryPage extends StatefulWidget {

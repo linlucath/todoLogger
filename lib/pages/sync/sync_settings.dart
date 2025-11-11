@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import '../../models/sync_models.dart';
-import '../../services/sync_service.dart';
+import '../../services/sync/sync_service.dart';
 import 'sync_history.dart';
 import '../debug/shared_preferences_viewer.dart';
 

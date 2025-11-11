@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import '../../models/sync_models.dart';
 import '../../services/sync_service.dart';
 import 'sync_history.dart';
+import '../debug/shared_preferences_viewer.dart';
 
 /// 同步设置页面
 class SyncSettingsPage extends StatefulWidget {
@@ -26,6 +27,12 @@ class _SyncSettingsPageState extends State<SyncSettingsPage> {
         title: const Text('局域网同步'),
         backgroundColor: const Color(0xFF6C63FF),
         actions: [
+          // 🆕 调试工具 - SharedPreferences 查看器
+          IconButton(
+            icon: const Icon(Icons.bug_report),
+            onPressed: _openDebugTools,
+            tooltip: '调试工具',
+          ),
           // 查看同步历史
           IconButton(
             icon: const Icon(Icons.history),
@@ -507,6 +514,16 @@ class _SyncSettingsPageState extends State<SyncSettingsPage> {
         builder: (context) => SyncHistoryPage(
           historyService: widget.syncService.historyService,
         ),
+      ),
+    );
+  }
+
+  /// 🆕 打开调试工具
+  void _openDebugTools() {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => const SharedPreferencesViewer(),
       ),
     );
   }

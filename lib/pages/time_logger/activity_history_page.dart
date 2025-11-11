@@ -3,7 +3,7 @@ import 'package:intl/intl.dart';
 import '../../services/time_logger_storage.dart';
 import './edit_record_dialog.dart';
 
-/// 优化版活动历史页面 - 支持分页和懒加载，以及编辑、删除、创建功能
+/// 活动历史页面 - 支持分页和懒加载，以及编辑、删除、创建功能
 class ActivityHistoryPage extends StatefulWidget {
   final VoidCallback? onDataChanged; // 数据变化时的回调
 

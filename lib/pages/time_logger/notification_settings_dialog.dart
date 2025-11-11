@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'dart:io';
 import '../../services/notification_service.dart';
-import 'notification_history_page.dart';
 
 /// 通知设置对话框
 class NotificationSettingsDialog extends StatefulWidget {
@@ -340,30 +339,6 @@ class _NotificationSettingsDialogState
                 ],
               ),
             ),
-
-            // 🆕 查看历史按钮
-            if (_notificationService.notificationHistory.isNotEmpty)
-              Padding(
-                padding: const EdgeInsets.only(top: 12),
-                child: SizedBox(
-                  width: double.infinity,
-                  child: OutlinedButton.icon(
-                    onPressed: () {
-                      Navigator.of(context).push(
-                        MaterialPageRoute(
-                          builder: (context) => const NotificationHistoryPage(),
-                        ),
-                      );
-                    },
-                    icon: const Icon(Icons.history),
-                    label: const Text('查看通知历史'),
-                    style: OutlinedButton.styleFrom(
-                      foregroundColor: const Color(0xFF6C63FF),
-                      side: const BorderSide(color: Color(0xFF6C63FF)),
-                    ),
-                  ),
-                ),
-              ),
 
             const SizedBox(height: 16),
 

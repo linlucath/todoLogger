@@ -88,24 +88,31 @@ class _EditActivityDialogState extends State<EditActivityDialog> {
               ),
             ),
             const SizedBox(height: 8),
-            Wrap(
-              spacing: 8,
-              runSpacing: 8,
-              children: widget.activityHistory
-                  .where((activity) => activity != widget.currentName)
-                  .take(5) // 只显示前5个不同的活动
-                  .map((activity) {
-                return ActionChip(
-                  label: Text(activity),
-                  onPressed: () {
-                    _controller.text = activity;
-                    _controller.selection = TextSelection(
-                      baseOffset: 0,
-                      extentOffset: activity.length,
+            // 限制高度，最多显示3行标签
+            ConstrainedBox(
+              constraints: const BoxConstraints(
+                maxHeight: 120, // 约3行的高度：(32 + 8) * 3
+              ),
+              child: SingleChildScrollView(
+                child: Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: widget.activityHistory
+                      .where((activity) => activity != widget.currentName)
+                      .map((activity) {
+                    return ActionChip(
+                      label: Text(activity),
+                      onPressed: () {
+                        _controller.text = activity;
+                        _controller.selection = TextSelection(
+                          baseOffset: 0,
+                          extentOffset: activity.length,
+                        );
+                      },
                     );
-                  },
-                );
-              }).toList(),
+                  }).toList(),
+                ),
+              ),
             ),
           ],
         ],

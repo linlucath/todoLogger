@@ -6,7 +6,7 @@ import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import 'package:window_manager/window_manager.dart';
 import 'pages/todo/todo.dart';
 import 'pages/time_logger/time_logger.dart';
-import 'pages/target/target.dart';
+import 'pages/target/target_page.dart';
 import 'pages/statistics/statistics.dart';
 import 'pages/sync/sync_settings.dart';
 import 'widgets/custom_title_bar.dart';

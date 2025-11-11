@@ -3,7 +3,12 @@ import 'package:path/path.dart';
 import 'dart:async';
 
 /// SQLite 数据库服务
-/// 用于高效存储和查询时间记录和 To Do 数据
+/// 用于高效存储和查询时间记录数据
+///
+/// 设计说明：
+/// - 时间记录 (activity_records): 使用 SQLite，支持大量历史数据的复杂查询
+/// - 活动历史 (activity_history): 使用 SQLite，利用索引优化频率排序
+/// - Todo数据/目标/设置: 使用 SharedPreferences，数据量小且读写频繁
 class DatabaseService {
   static Database? _database;
   static final DatabaseService _instance = DatabaseService._internal();
@@ -28,13 +33,12 @@ class DatabaseService {
       path,
       version: 1,
       onCreate: _onCreate,
-      onUpgrade: _onUpgrade,
     );
   }
 
   /// 创建数据库表
   Future<void> _onCreate(Database db, int version) async {
-    // 时间记录表
+    // ==================== 时间记录表 ====================
     await db.execute('''
       CREATE TABLE activity_records (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -47,63 +51,19 @@ class DatabaseService {
       )
     ''');
 
-    // 🆕 优化后的索引 - 添加更多查询优化
+    // 优化索引 - 支持各种查询场景
     await db.execute(
         'CREATE INDEX idx_start_time ON activity_records (start_time)');
     await db.execute('CREATE INDEX idx_name ON activity_records (name)');
-    // 🆕 新增：用于日期范围查询的复合索引
     await db.execute(
         'CREATE INDEX idx_start_end_time ON activity_records (start_time, end_time)');
-    // 🆕 新增：用于todo关联查询的索引
     await db.execute(
         'CREATE INDEX idx_linked_todo ON activity_records (linked_todo_id)');
-    // 🆕 新增：用于统计查询的复合索引
     await db.execute(
         'CREATE INDEX idx_name_start ON activity_records (name, start_time)');
 
-    // To Do 列表表
-    await db.execute('''
-      CREATE TABLE todo_lists (
-        id TEXT PRIMARY KEY,
-        name TEXT NOT NULL,
-        color INTEGER NOT NULL,
-        is_expanded INTEGER NOT NULL DEFAULT 1,
-        display_order INTEGER NOT NULL,
-        created_at INTEGER NOT NULL
-      )
-    ''');
-
-    // 🆕 新增：To Do列表排序索引
-    await db
-        .execute('CREATE INDEX idx_list_order ON todo_lists (display_order)');
-
-    // To Do 项目表
-    await db.execute('''
-      CREATE TABLE todo_items (
-        id TEXT PRIMARY KEY,
-        title TEXT NOT NULL,
-        description TEXT,
-        is_completed INTEGER NOT NULL DEFAULT 0,
-        created_at INTEGER NOT NULL,
-        list_id TEXT,
-        display_order INTEGER NOT NULL,
-        FOREIGN KEY (list_id) REFERENCES todo_lists (id) ON DELETE CASCADE
-      )
-    ''');
-
-    // 创建 To Do 项目表的索引
-    await db.execute('CREATE INDEX idx_list_id ON todo_items (list_id)');
-    await db.execute('CREATE INDEX idx_completed ON todo_items (is_completed)');
-
-    // 🆕 新增：用于列表内排序的复合索引
-    await db.execute(
-        'CREATE INDEX idx_list_order_items ON todo_items (list_id, display_order)');
-
-    // 🆕 新增：用于快速查询未完成任务的复合索引
-    await db.execute(
-        'CREATE INDEX idx_list_completed ON todo_items (list_id, is_completed)');
-
-    // 活动历史表 (用于自动完成)
+    // ==================== 活动历史表 ====================
+    // 用于活动名称的自动完成和使用频率统计
     await db.execute('''
       CREATE TABLE activity_history (
         name TEXT PRIMARY KEY,
@@ -112,29 +72,11 @@ class DatabaseService {
       )
     ''');
 
-    // 🆕 新增：用于最近使用排序的索引
+    // 优化索引 - 支持按使用频率和最近使用排序
     await db.execute(
         'CREATE INDEX idx_last_used ON activity_history (last_used DESC)');
-
-    // 🆕 新增：用于使用频率排序的索引
     await db.execute(
         'CREATE INDEX idx_use_count ON activity_history (use_count DESC)');
-
-    // 应用设置表
-    await db.execute('''
-      CREATE TABLE app_settings (
-        key TEXT PRIMARY KEY,
-        value TEXT NOT NULL
-      )
-    ''');
-  }
-
-  /// 数据库升级
-  Future<void> _onUpgrade(Database db, int oldVersion, int newVersion) async {
-    // 未来版本升级时使用
-    if (oldVersion < 2) {
-      // 添加新字段或表
-    }
   }
 
   // ==================== 时间记录相关 ====================
@@ -218,94 +160,6 @@ class DatabaseService {
     return Sqflite.firstIntValue(result) ?? 0;
   }
 
-  // ==================== To Do 相关 ====================
-
-  /// 插入 To Do 列表
-  Future<int> insertTodoList(Map<String, dynamic> list) async {
-    final db = await database;
-    return await db.insert('todo_lists', list);
-  }
-
-  /// 更新 To Do 列表
-  Future<int> updateTodoList(String id, Map<String, dynamic> list) async {
-    final db = await database;
-    return await db.update(
-      'todo_lists',
-      list,
-      where: 'id = ?',
-      whereArgs: [id],
-    );
-  }
-
-  /// 获取所有 To Do 列表
-  Future<List<Map<String, dynamic>>> getTodoLists() async {
-    final db = await database;
-    return await db.query('todo_lists', orderBy: 'display_order ASC');
-  }
-
-  /// 删除 To Do 列表
-  Future<int> deleteTodoList(String id) async {
-    final db = await database;
-    return await db.delete(
-      'todo_lists',
-      where: 'id = ?',
-      whereArgs: [id],
-    );
-  }
-
-  /// 插入 To Do 项目
-  Future<int> insertTodoItem(Map<String, dynamic> item) async {
-    final db = await database;
-    return await db.insert('todo_items', item);
-  }
-
-  /// 更新 To Do 项目
-  Future<int> updateTodoItem(String id, Map<String, dynamic> item) async {
-    final db = await database;
-    return await db.update(
-      'todo_items',
-      item,
-      where: 'id = ?',
-      whereArgs: [id],
-    );
-  }
-
-  /// 获取所有 To Do 项目
-  Future<List<Map<String, dynamic>>> getTodoItems({String? listId}) async {
-    final db = await database;
-
-    if (listId != null) {
-      return await db.query(
-        'todo_items',
-        where: 'list_id = ?',
-        whereArgs: [listId],
-        orderBy: 'display_order ASC',
-      );
-    }
-
-    return await db.query('todo_items', orderBy: 'display_order ASC');
-  }
-
-  /// 获取独立的 To Do 项目 (不属于任何列表)
-  Future<List<Map<String, dynamic>>> getIndependentTodoItems() async {
-    final db = await database;
-    return await db.query(
-      'todo_items',
-      where: 'list_id IS NULL',
-      orderBy: 'display_order ASC',
-    );
-  }
-
-  /// 删除 To Do 项目
-  Future<int> deleteTodoItem(String id) async {
-    final db = await database;
-    return await db.delete(
-      'todo_items',
-      where: 'id = ?',
-      whereArgs: [id],
-    );
-  }
-
   // ==================== 活动历史相关 ====================
 
   /// 记录活动使用
@@ -348,41 +202,13 @@ class DatabaseService {
     return results.map((r) => r['name'] as String).toList();
   }
 
-  // ==================== 设置相关 ====================
-
-  /// 保存设置
-  Future<void> saveSetting(String key, String value) async {
-    final db = await database;
-    await db.insert(
-      'app_settings',
-      {'key': key, 'value': value},
-      conflictAlgorithm: ConflictAlgorithm.replace,
-    );
-  }
-
-  /// 获取设置
-  Future<String?> getSetting(String key) async {
-    final db = await database;
-    final results = await db.query(
-      'app_settings',
-      where: 'key = ?',
-      whereArgs: [key],
-    );
-
-    if (results.isEmpty) return null;
-    return results.first['value'] as String;
-  }
-
   // ==================== 数据库维护 ====================
 
   /// 清空所有数据
   Future<void> clearAllData() async {
     final db = await database;
     await db.delete('activity_records');
-    await db.delete('todo_lists');
-    await db.delete('todo_items');
     await db.delete('activity_history');
-    await db.delete('app_settings');
   }
 
   /// 关闭数据库

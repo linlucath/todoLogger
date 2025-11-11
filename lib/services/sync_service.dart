@@ -14,8 +14,8 @@ import 'git_style_merger.dart'; // 🆕 Git-style 合并器
 import 'sync_history_service.dart';
 import 'todo_storage.dart';
 import 'time_logger_storage.dart';
-import '../pages/target/target_storage.dart';
-import '../pages/target/models.dart';
+import 'target_storage.dart';
+import '../models/target_models.dart';
 
 /// 同步服务 - 统一管理所有同步功能
 class SyncService {

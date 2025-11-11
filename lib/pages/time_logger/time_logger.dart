@@ -397,12 +397,38 @@ class _TimeLoggerPageState extends State<TimeLoggerPage> {
     );
   }
 
+  // 🆕 根据最近两天的使用频率获取活动历史
+  Future<List<String>> _getFrequentActivities() async {
+    // 获取最近两天的所有活动记录
+    final recentRecords = await TimeLoggerStorage.getRecentRecords(7);
+
+    // 统计每个活动的使用频率
+    final Map<String, int> frequencyMap = {};
+    for (var record in recentRecords) {
+      frequencyMap[record.name] = (frequencyMap[record.name] ?? 0) + 1;
+    }
+
+    // 也包含当前会话中使用过的活动
+    for (var activityName in _activityHistory) {
+      frequencyMap[activityName] = (frequencyMap[activityName] ?? 0) + 1;
+    }
+
+    // 按频率排序（频率高的在前）
+    final sortedActivities = frequencyMap.entries.toList()
+      ..sort((a, b) => b.value.compareTo(a.value));
+
+    // 返回活动名称列表
+    return sortedActivities.map((e) => e.key).toList();
+  }
+
   void _showStartActivityDialog() async {
+    final frequentActivities = await _getFrequentActivities();
+
     final result = await showDialog<Map<String, dynamic>>(
       context: context,
       builder: (BuildContext context) {
         return StartActivityDialog(
-          activityHistory: _activityHistory.toList(),
+          activityHistory: frequentActivities,
         );
       },
     );
@@ -420,12 +446,14 @@ class _TimeLoggerPageState extends State<TimeLoggerPage> {
   void _editCurrentActivityName() async {
     if (_currentActivity == null) return;
 
+    final frequentActivities = await _getFrequentActivities();
+
     final result = await showDialog<String>(
       context: context,
       builder: (BuildContext context) {
         return EditActivityDialog(
           currentName: _currentActivity!.name,
-          activityHistory: _activityHistory.toList(),
+          activityHistory: frequentActivities,
         );
       },
     );

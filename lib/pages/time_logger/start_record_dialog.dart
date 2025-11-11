@@ -63,23 +63,31 @@ class _StartActivityDialogState extends State<StartActivityDialog> {
               ),
             ),
             const SizedBox(height: 8),
-            Wrap(
-              spacing: 8,
-              runSpacing: 8,
-              children: widget.activityHistory.map((activity) {
-                return ActionChip(
-                  label: Text(activity),
-                  onPressed: () {
-                    _controller.text = activity;
-                  },
-                );
-              }).toList(),
+            // 限制高度，最多显示3行标签（每个 ActionChip 高度约32px + 8px间距）
+            ConstrainedBox(
+              constraints: const BoxConstraints(
+                maxHeight: 120, // 约3行的高度：(32 + 8) * 3
+              ),
+              child: SingleChildScrollView(
+                child: Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: widget.activityHistory.map((activity) {
+                    return ActionChip(
+                      label: Text(activity),
+                      onPressed: () {
+                        _controller.text = activity;
+                      },
+                    );
+                  }).toList(),
+                ),
+              ),
             ),
           ],
 
           const SizedBox(height: 16),
 
-          // TODO关联（可选）
+          // 与 To Do 关联（可选）
           OutlinedButton.icon(
             onPressed: () async {
               final result = await showDialog<Map<String, dynamic>>(

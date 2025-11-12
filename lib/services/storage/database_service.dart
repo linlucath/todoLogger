@@ -31,8 +31,9 @@ class DatabaseService {
 
     return await openDatabase(
       path,
-      version: 1,
+      version: 2, // 升级到版本 2
       onCreate: _onCreate,
+      onUpgrade: _onUpgrade,
     );
   }
 
@@ -77,6 +78,105 @@ class DatabaseService {
         'CREATE INDEX idx_last_used ON activity_history (last_used DESC)');
     await db.execute(
         'CREATE INDEX idx_use_count ON activity_history (use_count DESC)');
+
+    // ==================== 计时器操作记录表 (v2) ====================
+    // 用于跨设备同步时的计时器冲突检测和解决
+    await db.execute('''
+      CREATE TABLE timer_operations (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        operation_id TEXT NOT NULL UNIQUE,
+        activity_id TEXT NOT NULL,
+        activity_name TEXT NOT NULL,
+        operation_type TEXT NOT NULL,
+        operation_time INTEGER NOT NULL,
+        device_id TEXT NOT NULL,
+        device_name TEXT NOT NULL,
+        actual_time INTEGER,
+        linked_todo_id TEXT,
+        sequence_number INTEGER NOT NULL,
+        is_synced INTEGER NOT NULL DEFAULT 0,
+        created_at INTEGER NOT NULL
+      )
+    ''');
+
+    // 索引优化 - 支持按活动ID、设备ID、时间查询
+    await db.execute(
+        'CREATE INDEX idx_activity_id ON timer_operations (activity_id)');
+    await db
+        .execute('CREATE INDEX idx_device_id ON timer_operations (device_id)');
+    await db.execute(
+        'CREATE INDEX idx_operation_time ON timer_operations (operation_time DESC)');
+    await db.execute(
+        'CREATE INDEX idx_activity_seq ON timer_operations (activity_id, sequence_number)');
+    await db.execute(
+        'CREATE UNIQUE INDEX idx_operation_id ON timer_operations (operation_id)');
+
+    // ==================== 计时器状态快照表 (v2) ====================
+    // 缓存每个活动的最新状态，避免频繁查询操作记录
+    await db.execute('''
+      CREATE TABLE timer_snapshots (
+        activity_id TEXT PRIMARY KEY,
+        last_operation TEXT NOT NULL,
+        last_operation_time INTEGER NOT NULL,
+        last_operation_device TEXT NOT NULL,
+        last_sequence_number INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      )
+    ''');
+
+    await db.execute(
+        'CREATE INDEX idx_snapshot_time ON timer_snapshots (last_operation_time DESC)');
+  }
+
+  /// 数据库升级
+  Future<void> _onUpgrade(Database db, int oldVersion, int newVersion) async {
+    if (oldVersion < 2) {
+      // 升级到版本 2: 添加计时器操作记录表
+      await db.execute('''
+        CREATE TABLE timer_operations (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          operation_id TEXT NOT NULL UNIQUE,
+          activity_id TEXT NOT NULL,
+          activity_name TEXT NOT NULL,
+          operation_type TEXT NOT NULL,
+          operation_time INTEGER NOT NULL,
+          device_id TEXT NOT NULL,
+          device_name TEXT NOT NULL,
+          actual_time INTEGER,
+          linked_todo_id TEXT,
+          sequence_number INTEGER NOT NULL,
+          is_synced INTEGER NOT NULL DEFAULT 0,
+          created_at INTEGER NOT NULL
+        )
+      ''');
+
+      await db.execute(
+          'CREATE INDEX idx_activity_id ON timer_operations (activity_id)');
+      await db.execute(
+          'CREATE INDEX idx_device_id ON timer_operations (device_id)');
+      await db.execute(
+          'CREATE INDEX idx_operation_time ON timer_operations (operation_time DESC)');
+      await db.execute(
+          'CREATE INDEX idx_activity_seq ON timer_operations (activity_id, sequence_number)');
+      await db.execute(
+          'CREATE UNIQUE INDEX idx_operation_id ON timer_operations (operation_id)');
+
+      await db.execute('''
+        CREATE TABLE timer_snapshots (
+          activity_id TEXT PRIMARY KEY,
+          last_operation TEXT NOT NULL,
+          last_operation_time INTEGER NOT NULL,
+          last_operation_device TEXT NOT NULL,
+          last_sequence_number INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL
+        )
+      ''');
+
+      await db.execute(
+          'CREATE INDEX idx_snapshot_time ON timer_snapshots (last_operation_time DESC)');
+
+      print('✅ [Database] 升级到版本 2: 计时器操作记录表已创建');
+    }
   }
 
   // ==================== 时间记录相关 ====================

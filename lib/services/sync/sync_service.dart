@@ -5,6 +5,7 @@ import 'package:uuid/uuid.dart';
 import '../../models/sync_models.dart';
 import '../../models/sync_data_models.dart';
 import '../../models/sync_error.dart';
+import '../../models/timer_operation_models.dart'; // 🆕 计时器操作模型
 import '../../utils/sync_compression.dart';
 import '../../utils/sync_lock.dart';
 import 'device_discovery_service.dart';
@@ -12,9 +13,11 @@ import 'sync_server_service.dart';
 import 'sync_client_service.dart';
 import 'git_style_merger.dart'; // 🆕 Git-style 合并器
 import 'sync_history_service.dart';
+import 'timer_conflict_resolver.dart'; // 🆕 计时器冲突解决器
 import '../storage/todo_storage.dart';
 import '../storage/time_logger_storage.dart';
 import '../storage/target_storage.dart';
+import '../storage/timer_operation_storage.dart'; // 🆕 计时器操作存储
 import '../../models/target_models.dart';
 
 /// 同步服务 - 统一管理所有同步功能
@@ -26,6 +29,9 @@ class SyncService {
   final GitStyleMerger _gitMerger = GitStyleMerger(
       conflictStrategy: ConflictStrategy.lastWrite); // 🆕 Git-style 合并器
   final SyncHistoryService _historyService = SyncHistoryService();
+  final TimerOperationStorage _timerOpStorage =
+      TimerOperationStorage(); // 🆕 计时器操作存储
+  late final TimerConflictResolver _conflictResolver; // 🆕 计时器冲突解决器
 
   // 当前设备信息
   DeviceInfo? _currentDevice;
@@ -75,6 +81,9 @@ class SyncService {
   final Map<String, TimerState> _activeTimers = {};
   // 🆕 计时器Map的互斥标志，防止并发修改
   bool _isUpdatingActiveTimers = false;
+
+  // 🆕 活动操作序列号跟踪（按 activityId 存储）
+  final Map<String, int> _activitySequenceNumbers = {};
 
   // 🆕 设备断连延迟移除（防止快速重连导致计时器丢失）
   final Map<String, Timer> _deviceDisconnectTimers = {};
@@ -127,6 +136,9 @@ class SyncService {
   /// 初始化同步服务
   Future<void> initialize() async {
     print('🚀 [SyncService] 初始化同步服务');
+
+    // 🆕 初始化冲突解决器
+    _conflictResolver = TimerConflictResolver(_timerOpStorage);
 
     // 加载同步设置
     await _loadSettings();
@@ -1827,6 +1839,15 @@ class SyncService {
     print('   activityName: $activityName');
     print('   开始时间: $startTime');
 
+    // 🆕 步骤2.5: 记录计时器操作到数据库
+    _recordTimerOperation(
+      activityId: activityId,
+      activityName: activityName,
+      operationType: TimerOperationType.start,
+      operationTime: startTime,
+      linkedTodoId: todoId,
+    );
+
     // 步骤3: 创建计时开始消息
     // 这里调用了 SyncMessage.timerStart 工厂方法
     // 该方法会将所有参数封装成标准的JSON格式
@@ -1894,6 +1915,27 @@ class SyncService {
     print('📤 [SyncService] 广播计时停止');
     print('   activityId: $activityId');
     print('   持续时间: $duration秒');
+
+    // 🆕 记录计时器停止操作到数据库
+    // 获取活动名称（从 _activeTimers 中获取，如果存在）
+    String activityName = '';
+    String? linkedTodoId;
+    for (final timer in _activeTimers.values) {
+      if (timer.activityId == activityId) {
+        activityName = timer.activityName;
+        linkedTodoId = timer.linkedTodoId;
+        break;
+      }
+    }
+
+    _recordTimerOperation(
+      activityId: activityId,
+      activityName: activityName,
+      operationType: TimerOperationType.stop,
+      operationTime: endTime,
+      actualTime: endTime,
+      linkedTodoId: linkedTodoId,
+    );
 
     // 创建计时停止消息
     final message = SyncMessage.timerStop(
@@ -1972,9 +2014,9 @@ class SyncService {
 
   /// 全量同步所有数据到指定设备
   Future<bool> syncAllDataToDevice(String deviceId) async {
-    print('🔘 [SyncService] syncAllDataToDevice 调用，强制全量同步模式');
+    print('🔘 [SyncService] syncAllDataToDevice 调用，开始同步全部数据');
 
-    // 🆕 用户点击同步按钮时，强制使用全量同步模式
+    // 🆕 用户点击同步按钮时，同步全部数据
     final originalMode = _syncMode;
     _syncMode = SyncMode.full;
 
@@ -2322,6 +2364,7 @@ class SyncService {
   }
 
   /// 执行实际的冲突解决逻辑
+  /// 🆕 使用操作记录进行智能冲突检测，考虑设备时间差
   Future<void> _doResolveActiveTimerConflicts(String? triggerDeviceId) async {
     print('🔍 [SyncService] 检测活动计时冲突...');
 
@@ -2329,7 +2372,7 @@ class SyncService {
       // 1. 获取本地当前活动
       final localActivity = await TimeLoggerStorage.getCurrentActivity();
 
-      // 2. 收集所有正在进行的活动
+      // 2. 收集所有正在显示的活动（包括本地和远程）
       final activeActivities = <_ActiveActivity>[];
 
       // 添加本地活动
@@ -2353,6 +2396,7 @@ class SyncService {
         if (deviceId == _currentDevice?.deviceId) continue;
 
         final remoteActivity = ActivityRecordData(
+          activityId: timer.activityId,
           name: timer.activityName,
           startTime: timer.startTime,
           endTime: null,
@@ -2369,165 +2413,201 @@ class SyncService {
             '📍 [SyncService] 远程活动: ${timer.activityName} (${timer.deviceName}, 开始: ${timer.startTime})');
       }
 
-      // 3. 如果没有活动或只有一个活动，无需处理
+      // 3. 如果没有活动，无需处理
       if (activeActivities.isEmpty) {
         print('✅ [SyncService] 无活动冲突');
         return;
       }
 
-      if (activeActivities.length == 1) {
-        print('✅ [SyncService] 只有一个活动，无需冲突解决');
-        // 确保单个活动被正确处理
-        final single = activeActivities.first;
+      // 🆕 4. 对于每个活动，检查操作记录中的真实状态
+      print('🔍 [SyncService] 检查操作记录以确定真实状态...');
 
-        if (single.isLocal) {
-          // 本地活动，广播给其他设备（使用稳定的activityId）
-          broadcastTimerStart(
-            single.activity.activityId,
-            single.activity.name,
-            single.activity.startTime,
-            single.activity.linkedTodoId,
-            single.activity.linkedTodoTitle,
-          );
-        } else {
-          // 🔑 关键修复：远程活动需要保存为本地当前活动
-          print('📥 [SyncService] 发现远程活动: ${single.activity.name}');
-          print('💾 [SyncService] 将远程活动设置为本地当前活动...');
+      for (final activity in activeActivities) {
+        final activityId = activity.activity.activityId;
 
-          // 🔑 第一步：确保远程活动在 _activeTimers 中
-          if (!_activeTimers.containsKey(single.deviceId)) {
-            final timerState = TimerState(
-              activityId: single.activity.activityId,
-              activityName: single.activity.name,
-              linkedTodoId: single.activity.linkedTodoId,
-              linkedTodoTitle: single.activity.linkedTodoTitle,
-              startTime: single.activity.startTime,
-              currentDuration: DateTime.now()
-                  .difference(single.activity.startTime)
-                  .inSeconds,
-              deviceId: single.deviceId,
-              deviceName: single.deviceName,
-            );
-            _activeTimers[single.deviceId] = timerState;
-            print('✅ [SyncService] 远程活动已添加到 _activeTimers');
+        // 🆕 使用冲突解决器检测此活动是否真的应该运行
+        final conflictResult = await _conflictResolver.detectConflict(
+          activityId: activityId,
+          currentDeviceId: _currentDevice?.deviceId ?? 'local',
+          isLocalRunning: activity.isLocal,
+        );
+
+        if (conflictResult.hasConflict) {
+          print('⚠️  [SyncService] 检测到冲突: ${conflictResult.description}');
+
+          // 🆕 根据冲突类型处理
+          switch (conflictResult.conflictType) {
+            case TimerConflictType.remoteStopped:
+              // 远程已停止，本地还在运行 -> 停止本地
+              if (activity.isLocal) {
+                print('� [SyncService] 远程已停止此活动，停止本地计时器');
+                final stopOp = conflictResult.relatedOperations.first;
+                await _endLocalActivity(
+                  activity.activity,
+                  stopOp.actualTime ?? stopOp.operationTime,
+                );
+              }
+              break;
+
+            case TimerConflictType.remoteRunning:
+              // 远程正在运行，本地未运行 -> 接受远程
+              if (!activity.isLocal) {
+                print('✅ [SyncService] 接受远程设备的活动');
+                await _acceptRemoteActivity(activity);
+              }
+              break;
+
+            case TimerConflictType.multipleRunning:
+              // 多个设备同时运行 -> 需要仲裁
+              print('⚖️  [SyncService] 多设备冲突，开始仲裁...');
+              await _resolveMultiDeviceConflict(
+                activityId,
+                activeActivities
+                    .where((a) => a.activity.activityId == activityId)
+                    .toList(),
+              );
+              break;
+
+            default:
+              break;
           }
-
-          // 🔑 第二步：将远程活动保存为本地当前活动
-          await TimeLoggerStorage.saveCurrentActivity(ActivityRecordData(
-            activityId: single.activity.activityId,
-            name: single.activity.name,
-            startTime: single.activity.startTime,
-            endTime: null,
-            linkedTodoId: single.activity.linkedTodoId,
-            linkedTodoTitle: single.activity.linkedTodoTitle,
-          ));
-          print('💾 [SyncService] 远程活动已保存为本地当前活动');
-
-          // 🔑 第三步：通知活动计时器变化
-          _notifyActiveTimersChanged();
-          print('📢 [SyncService] 已调用 _notifyActiveTimersChanged() 更新UI计时器显示');
-
-          // 🔑 第四步：延迟后通知页面刷新
-          await Future.delayed(const Duration(milliseconds: 100));
-          _notifyDataUpdated('timeLogs', single.deviceId, 1);
-          print('📢 [SyncService] 已通知UI刷新以显示远程活动');
         }
+      }
+
+      // 5. 如果只有一个活动且无冲突，确保正确同步
+      if (activeActivities.length == 1 && activeActivities.first.isLocal) {
+        final single = activeActivities.first;
+        // 本地活动，广播给其他设备
+        broadcastTimerStart(
+          single.activity.activityId,
+          single.activity.name,
+          single.activity.startTime,
+          single.activity.linkedTodoId,
+          single.activity.linkedTodoTitle,
+        );
+      }
+
+      print('✅ [SyncService] 冲突检测完成');
+    } catch (e) {
+      print('❌ [SyncService] 解决活动冲突失败: $e');
+    }
+  }
+
+  /// 🆕 接受远程活动到本地
+  Future<void> _acceptRemoteActivity(_ActiveActivity activity) async {
+    try {
+      // 确保远程活动在 _activeTimers 中
+      if (!_activeTimers.containsKey(activity.deviceId)) {
+        final timerState = TimerState(
+          activityId: activity.activity.activityId,
+          activityName: activity.activity.name,
+          linkedTodoId: activity.activity.linkedTodoId,
+          linkedTodoTitle: activity.activity.linkedTodoTitle,
+          startTime: activity.activity.startTime,
+          currentDuration:
+              DateTime.now().difference(activity.activity.startTime).inSeconds,
+          deviceId: activity.deviceId,
+          deviceName: activity.deviceName,
+        );
+        _activeTimers[activity.deviceId] = timerState;
+      }
+
+      // 保存为本地当前活动
+      await TimeLoggerStorage.saveCurrentActivity(activity.activity);
+
+      // 通知UI更新
+      _notifyActiveTimersChanged();
+      await Future.delayed(const Duration(milliseconds: 100));
+      _notifyDataUpdated('timeLogs', activity.deviceId, 1);
+
+      print('✅ [SyncService] 已接受远程活动: ${activity.activity.name}');
+    } catch (e) {
+      print('❌ [SyncService] 接受远程活动失败: $e');
+    }
+  }
+
+  /// 🆕 解决多设备同时运行同一活动的冲突
+  Future<void> _resolveMultiDeviceConflict(
+    String activityId,
+    List<_ActiveActivity> conflictingActivities,
+  ) async {
+    if (conflictingActivities.isEmpty) return;
+
+    try {
+      // 获取所有相关的操作记录
+      final operations =
+          await _timerOpStorage.getOperationsByActivity(activityId);
+
+      if (operations.isEmpty) {
+        print('⚠️  [SyncService] 无操作记录，使用时间戳仲裁');
+        // 回退到时间戳排序
+        conflictingActivities.sort(
+            (a, b) => b.activity.startTime.compareTo(a.activity.startTime));
+        await _applySimpleResolution(conflictingActivities);
         return;
       }
 
-      // 4. 存在多个活动，需要解决冲突
-      print('⚠️  [SyncService] 检测到 ${activeActivities.length} 个正在进行的活动冲突');
+      // 🆕 使用冲突解决器进行智能仲裁
+      final resolution = await _conflictResolver.resolveConflict(
+        conflictingOperations: operations
+            .where((op) => op.operationType == TimerOperationType.start)
+            .toList(),
+        currentDeviceId: _currentDevice?.deviceId ?? 'local',
+      );
 
-      // 按开始时间排序，最新的在前
-      activeActivities
-          .sort((a, b) => b.activity.startTime.compareTo(a.activity.startTime));
+      print('⚖️  [SyncService] 仲裁结果: ${resolution.toString()}');
 
-      // 保留最新的活动（第一个）
-      final newestActivity = activeActivities.first;
-      print(
-          '🏆 [SyncService] 保留最新活动: ${newestActivity.activity.name} (${newestActivity.deviceName})');
+      if (resolution.shouldStopAll) {
+        // 所有设备都应该停止
+        print('🛑 [SyncService] 活动已结束，停止所有设备');
+        for (final activity in conflictingActivities) {
+          if (activity.isLocal) {
+            await _endLocalActivity(activity.activity, resolution.stopTime!);
+          } else {
+            await _sendEndActivityRequest(
+                activity.deviceId, resolution.stopTime!);
+          }
+        }
+      } else if (resolution.keepDeviceId != null) {
+        // 保留某个设备的活动，结束其他的
+        print('🏆 [SyncService] 保留设备 ${resolution.keepDeviceId} 的活动');
 
-      // 结束其他所有活动
-      for (int i = 1; i < activeActivities.length; i++) {
-        final oldActivity = activeActivities[i];
-
-        // 计算结束时间：使用较新活动的开始时间
-        final endTime = activeActivities[i - 1].activity.startTime;
-
-        print(
-            '⏹️  [SyncService] 结束旧活动: ${oldActivity.activity.name} (${oldActivity.deviceName})');
-        print('   开始时间: ${oldActivity.activity.startTime}');
-        print('   结束时间: $endTime');
-
-        if (oldActivity.isLocal) {
-          // 结束本地活动
-          await _endLocalActivity(oldActivity.activity, endTime);
-        } else {
-          // 发送消息给远程设备，请求结束其活动
-          await _sendEndActivityRequest(oldActivity.deviceId, endTime);
+        for (final activity in conflictingActivities) {
+          if (activity.deviceId != resolution.keepDeviceId) {
+            // 结束这个设备的活动
+            final endTime = resolution.winner?.operationTime ?? DateTime.now();
+            if (activity.isLocal) {
+              await _endLocalActivity(activity.activity, endTime);
+            } else {
+              await _sendEndActivityRequest(activity.deviceId, endTime);
+            }
+          } else if (!activity.isLocal) {
+            // 这是获胜的远程活动，接受它
+            await _acceptRemoteActivity(activity);
+          }
         }
       }
-
-      // 5. 确保最新活动被正确设置
-      if (newestActivity.isLocal) {
-        // 本地活动保持运行，广播给其他设备（使用稳定的activityId）
-        broadcastTimerStart(
-          newestActivity.activity.activityId,
-          newestActivity.activity.name,
-          newestActivity.activity.startTime,
-          newestActivity.activity.linkedTodoId,
-          newestActivity.activity.linkedTodoTitle,
-        );
-      } else {
-        // 🆕 远程活动获胜，需要在本地设置并通知UI
-        print('📥 [SyncService] 远程活动获胜，设置为本地当前活动');
-
-        // 🔑 第一步：确保远程活动在 _activeTimers 中（如果不存在则添加）
-        if (!_activeTimers.containsKey(newestActivity.deviceId)) {
-          final timerState = TimerState(
-            activityId: newestActivity.activity.activityId,
-            activityName: newestActivity.activity.name,
-            linkedTodoId: newestActivity.activity.linkedTodoId,
-            linkedTodoTitle: newestActivity.activity.linkedTodoTitle,
-            startTime: newestActivity.activity.startTime,
-            currentDuration: DateTime.now()
-                .difference(newestActivity.activity.startTime)
-                .inSeconds,
-            deviceId: newestActivity.deviceId,
-            deviceName: newestActivity.deviceName,
-          );
-          _activeTimers[newestActivity.deviceId] = timerState;
-          print('✅ [SyncService] 远程活动已添加到 _activeTimers');
-        }
-
-        // 🔑 第二步：将远程活动保存为本地当前活动
-        await TimeLoggerStorage.saveCurrentActivity(ActivityRecordData(
-          activityId: newestActivity.activity.activityId,
-          name: newestActivity.activity.name,
-          startTime: newestActivity.activity.startTime,
-          endTime: null,
-          linkedTodoId: newestActivity.activity.linkedTodoId,
-          linkedTodoTitle: newestActivity.activity.linkedTodoTitle,
-        ));
-        print('💾 [SyncService] 远程活动已保存为本地当前活动');
-
-        // 🔑 第三步：通知活动计时器变化，让UI显示远程活动
-        _notifyActiveTimersChanged();
-        print('📢 [SyncService] 已调用 _notifyActiveTimersChanged() 更新UI计时器显示');
-
-        // 🔑 第四步：使用 Future.delayed 确保通知在下一帧发送，给UI足够时间处理
-        await Future.delayed(const Duration(milliseconds: 100));
-
-        // 🔑 第五步：通知计时器页面刷新（显示远程活动）
-        _notifyDataUpdated('timeLogs', newestActivity.deviceId, 1);
-        print('📢 [SyncService] 已通知UI刷新以显示远程活动');
-      }
-
-      print(
-          '✅ [SyncService] 冲突已解决: 保留1个活动，结束${activeActivities.length - 1}个活动');
     } catch (e) {
-      print('❌ [SyncService] 解决活动冲突失败: $e');
-      // 不抛出异常，继续同步其他数据
+      print('❌ [SyncService] 多设备冲突解决失败: $e');
+    }
+  }
+
+  /// 简单的冲突解决（回退方案）
+  Future<void> _applySimpleResolution(List<_ActiveActivity> activities) async {
+    if (activities.isEmpty) return;
+
+    final newest = activities.first;
+    print('🏆 [SyncService] 保留最新活动: ${newest.activity.name}');
+
+    for (int i = 1; i < activities.length; i++) {
+      final old = activities[i];
+      final endTime = newest.activity.startTime;
+
+      if (old.isLocal) {
+        await _endLocalActivity(old.activity, endTime);
+      } else {
+        await _sendEndActivityRequest(old.deviceId, endTime);
+      }
     }
   }
 
@@ -3910,6 +3990,53 @@ class SyncService {
     _performanceMetrics.clear();
 
     print('✅ [SyncService] 资源释放完成');
+  }
+
+  // ==================== 计时器操作记录 ====================
+
+  /// 记录计时器操作到数据库
+  /// 用于跨设备同步时的冲突检测
+  void _recordTimerOperation({
+    required String activityId,
+    required String activityName,
+    required TimerOperationType operationType,
+    required DateTime operationTime,
+    DateTime? actualTime,
+    String? linkedTodoId,
+  }) {
+    if (_currentDevice == null) return;
+
+    try {
+      // 获取或递增序列号
+      final currentSeq = _activitySequenceNumbers[activityId] ?? 0;
+      final newSeq = currentSeq + 1;
+      _activitySequenceNumbers[activityId] = newSeq;
+
+      // 创建操作记录
+      final operation = TimerOperationRecord(
+        operationId: const Uuid().v4(),
+        activityId: activityId,
+        activityName: activityName,
+        operationType: operationType,
+        operationTime: operationTime,
+        deviceId: _currentDevice!.deviceId,
+        deviceName: _currentDevice!.deviceName,
+        actualTime: actualTime,
+        linkedTodoId: linkedTodoId,
+        sequenceNumber: newSeq,
+        isSynced: false,
+      );
+
+      // 异步保存到数据库
+      _timerOpStorage.saveOperation(operation).then((_) {
+        print(
+            '✅ [TimerOp] 已记录操作: ${operationType.name} - $activityName (seq: $newSeq)');
+      }).catchError((e) {
+        print('❌ [TimerOp] 保存操作记录失败: $e');
+      });
+    } catch (e) {
+      print('❌ [TimerOp] 记录操作失败: $e');
+    }
   }
 }
 
